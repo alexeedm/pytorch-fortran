@@ -1,0 +1,344 @@
+! Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+! MIT License
+! 
+! Permission is hereby granted, free of charge, to any person obtaining a
+! copy of this software and associated documentation files (the "Software"),
+! to deal in the Software without restriction, including without limitation
+! the rights to use, copy, modify, merge, publish, distribute, sublicense,
+! and/or sell copies of the Software, and to permit persons to whom the
+! Software is furnished to do so, subject to the following conditions:
+! 
+! The above copyright notice and this permission notice shall be included in
+! all copies or substantial portions of the Software.
+! 
+! THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+! IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+! FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+! THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+! LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+! FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+! DEALINGS IN THE SOFTWARE.
+
+#include "defines.inc"
+
+module torch_ftn
+
+    use iso_c_binding
+    use iso_fortran_env
+
+#ifdef _OPENACC
+    use openacc
+#endif
+
+    implicit none
+
+    public torch_module, torch_tensor
+           
+    type :: torch_module
+    private
+        type(c_ptr) :: handle
+        type(c_ptr) :: h_optimizer
+    contains
+        procedure :: load                 => torch_module_load
+        procedure :: forward              => torch_module_forward
+        procedure :: train                => torch_module_train
+        procedure :: create_optimizer_sgd => torch_module_create_optimizer_sgd
+        procedure :: save                 => torch_module_save
+        final     :: torch_module_free
+    end type
+
+    type :: torch_tensor
+    private
+        type(c_ptr) :: handle
+        type(c_ptr) :: host_ptr = c_null_ptr 
+        type(c_ptr) :: dev_ptr  = c_null_ptr 
+        logical     :: is_acc_mapped
+        integer     :: acc_mapped_size
+
+    contains      
+        procedure :: get_handle => torch_tensor_get_handle
+
+        final :: torch_tensor_free
+
+        generic :: from_array   => &
+<%            torch_tensor_from_{dim}_{dt}
+        generic :: to_array     => &
+<%            torch_tensor_to_{dim}_{dt}
+
+        procedure, private :: &
+<%            torch_tensor_from_{dim}_{dt}, torch_tensor_to_{dim}_{dt}
+    end type
+
+    ! Exposed flags and constants
+    integer, parameter :: module_use_device = TORCH_FTN_MODULE_USE_DEVICE
+    public module_use_device
+    
+    private
+
+    !!======================================================================================
+    !! Module-related C bindings
+    !!======================================================================================
+
+    interface
+        subroutine torch_module_load_cpp(handle, file_name, flags) &
+            bind(c, name="torch_module_load_cpp")
+            
+            import c_ptr, c_char, c_int
+            type(c_ptr),       intent(inout)     :: handle
+            character(c_char), intent(in)        :: file_name(*)
+            integer(c_int),    intent(in), value :: flags
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_module_save_cpp(handle, file_name) &
+            bind(c, name="torch_module_save_cpp")
+            
+            import c_ptr, c_char
+            type(c_ptr),       intent(in), value :: handle
+            character(c_char), intent(in)        :: file_name(*)
+        end subroutine
+    end interface
+
+
+    interface
+        subroutine torch_module_forward_cpp(module, input, output, flags) &
+            bind(c, name="torch_module_forward_cpp")
+
+            import c_ptr, c_int
+            type(c_ptr),    intent(in), value :: module
+            type(c_ptr),    intent(in), value :: input
+            type(c_ptr),    intent(out)       :: output
+            integer(c_int), intent(in), value :: flags
+
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_module_train_cpp(module, input, target, optimizer, loss) &
+            bind(c, name="torch_module_train_cpp")
+
+            import c_ptr, c_float
+            type(c_ptr),    intent(in), value :: module
+            type(c_ptr),    intent(in), value :: input
+            type(c_ptr),    intent(in), value :: target
+            type(c_ptr),    intent(in), value :: optimizer
+            real(c_float),  intent(out)       :: loss
+
+        end subroutine
+    end interface
+    
+    interface
+        subroutine torch_optimizer_create_sgd_cpp(handle, module, lr) &
+            bind(c, name="torch_optimizer_create_sgd_cpp")
+
+            import c_ptr, c_float
+            type(c_ptr),    intent(inout)     :: handle
+            type(c_ptr),    intent(in), value :: module
+            real(c_float),  intent(in), value :: lr
+
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_module_free_cpp(handle) &
+            bind(c, name="torch_module_free_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(in), value :: handle
+        end subroutine
+    end interface
+
+    !!======================================================================================
+    !! Tensor-related C bindings
+    !!======================================================================================
+
+    interface
+        subroutine torch_tensor_from_array_float_cpp( &
+            handle, array, arr_rank, arr_shape, elem_type, elem_size) &
+            bind(c, name="torch_tensor_from_array_float_cpp")
+
+            import c_ptr, c_int
+            type(c_ptr),    intent(out)       :: handle
+            type(c_ptr),    intent(in), value :: array
+            integer(c_int), intent(in), value :: arr_rank
+            integer(c_int), intent(in)        :: arr_shape(arr_rank)
+            integer(c_int), intent(in), value :: elem_type
+            integer(c_int), intent(in), value :: elem_size
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_to_array_cpp( &
+            handle, host_ptr, dev_ptr, arr_rank, arr_shape, elem_size) &
+            bind(c, name="torch_tensor_to_array_cpp")
+
+            import c_ptr, c_int
+            type(c_ptr),    intent(in),   value :: handle
+            type(c_ptr),    intent(out)         :: host_ptr
+            type(c_ptr),    intent(out)         :: dev_ptr
+            integer(c_int), intent(in),   value :: arr_rank
+            integer(c_int), intent(inout)       :: arr_shape(arr_rank)
+            integer(c_int), intent(in),   value :: elem_size
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_free_cpp(handle, host_ptr, dev_ptr) &
+            bind(c, name="torch_tensor_free_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(in), value :: handle
+            type(c_ptr), intent(in), value :: host_ptr
+            type(c_ptr), intent(in), value :: dev_ptr
+        end subroutine
+    end interface
+
+    ! Private routines
+
+#ifdef _OPENACC
+    interface
+        type(c_devptr) function torch_helper_ptr_to_devptr_cpp(ptr) &
+            bind(c, name="torch_helper_ptr_to_devptr_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(in), value :: ptr
+        end function
+    end interface
+#endif
+
+    contains
+
+    !!======================================================================================
+    !! Module member subroutines
+    !!======================================================================================
+
+    subroutine torch_module_load(this, file_name, flags)
+        class(torch_module), intent(out) :: this
+        character(len=*),    intent(in)  :: file_name
+        integer, optional,   intent(in)  :: flags
+
+        integer :: actual_flags
+        
+        actual_flags = 0
+        if (present(flags)) then
+            actual_flags = flags
+        end if
+        
+        call torch_module_load_cpp(this%handle, file_name//c_null_char, actual_flags)
+    end subroutine
+
+    subroutine torch_module_save(this, file_name)
+        class(torch_module), intent(in) :: this
+        character(len=*),    intent(in) :: file_name
+        
+        call torch_module_save_cpp(this%handle, file_name//c_null_char)
+    end subroutine
+
+    subroutine torch_module_forward(this, input, output, flags)
+        class(torch_module), intent(inout) :: this
+        type(torch_tensor),  intent(in)    :: input
+        type(torch_tensor),  intent(out)   :: output
+        integer, optional,   intent(in)    :: flags
+
+        integer :: actual_flags
+        
+        actual_flags = 0
+        if (present(flags)) then
+            actual_flags = flags
+        end if
+
+        call torch_module_forward_cpp(this%handle, input%handle, output%handle, actual_flags)
+    end subroutine
+
+    subroutine torch_module_train(this, input, target, loss)
+        class(torch_module), intent(inout) :: this
+        type(torch_tensor),  intent(in)    :: input
+        type(torch_tensor),  intent(in)    :: target
+        real(real32),        intent(out)   :: loss
+
+        call torch_module_train_cpp(this%handle, input%handle, target%handle, this%h_optimizer, loss)
+    end subroutine
+
+    subroutine torch_module_create_optimizer_sgd(this, lr)
+        class(torch_module), intent(inout) :: this
+        real(real32),        intent(in)    :: lr
+
+        call torch_optimizer_create_sgd_cpp(this%h_optimizer, this%handle, lr)
+    end subroutine
+
+    subroutine torch_module_free(this)
+        type(torch_module) :: this
+
+        call torch_module_free_cpp(this%handle)
+    end subroutine
+
+    !!======================================================================================
+    !! Tensor member subroutines
+    !!======================================================================================
+    function torch_tensor_get_handle(this) result(ptr)
+        class(torch_tensor), intent(inout) :: this
+        type(c_ptr)                        :: ptr
+
+        ptr = this%handle
+    end function
+    
+    subroutine torch_tensor_free(this)
+        type(torch_tensor) :: this
+
+        integer(c_int8_t) , pointer :: dummy(:)
+
+#ifdef _OPENACC
+        if (this%is_acc_mapped) then
+            call c_f_pointer(this%host_ptr, dummy, (/this%acc_mapped_size/))
+            call acc_unmap_data(dummy)
+        end if
+#endif
+        call torch_tensor_free_cpp(this%handle, this%host_ptr, this%dev_ptr)
+    end subroutine
+
+    !!======================================================================================
+    !! Tensor member - generated subroutines for rank/datatype permutations
+    !!======================================================================================
+
+<<%
+    subroutine torch_tensor_from_{dim}_{dt}(this, array)
+        class(torch_tensor), intent(inout)                  :: this
+        real({dt_fort}),     intent(in), target, contiguous :: array({dims_shape})
+
+        this%is_acc_mapped = .false.
+        this%acc_mapped_size = 0
+        call torch_tensor_from_array_float_cpp(this%handle, &
+            c_loc(array), size(shape(array)), shape(array), TORCH_FTN_TYPE_FP, 4)
+    end subroutine
+    subroutine torch_tensor_to_{dim}_{dt}(this, array)
+        class(torch_tensor), intent(inout)        :: this
+        real({dt_fort}),     intent(out), pointer :: array({dims_shape})
+
+        type(c_ptr) :: host_ptr
+        type(c_ptr) :: dev_ptr
+        integer :: arr_shape({dim})
+
+        call torch_tensor_to_array_cpp(this%handle, host_ptr, dev_ptr, {dim}, arr_shape, 4)
+
+#ifdef _OPENACC
+        call c_f_pointer(host_ptr, array, arr_shape)
+        if (c_associated(dev_ptr)) then
+            this%is_acc_mapped = .true.
+            this%acc_mapped_size = product(arr_shape) * 4
+            this%host_ptr = host_ptr
+            this%dev_ptr  = dev_ptr
+            call acc_map_data(array, torch_helper_ptr_to_devptr_cpp(dev_ptr), this%acc_mapped_size)
+        end if
+#else
+        if (c_associated(dev_ptr)) then
+            call c_f_pointer(dev_ptr, array, arr_shape)
+        else
+            call c_f_pointer(host_ptr, array, arr_shape)
+        end if
+#endif
+
+    end subroutine
+%>>
+
+end module
