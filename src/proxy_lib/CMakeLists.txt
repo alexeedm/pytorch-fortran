@@ -22,7 +22,12 @@
 cmake_minimum_required(VERSION 3.13)
 
 # C++ library should be built with the same compiler as Pytorch
+if (OPENACC)
 project(PyTorch-ProxyLib LANGUAGES CXX CUDA)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__TORCH_FTN_USE_CUDA")
+else()
+    project(PyTorch-ProxyLib LANGUAGES CXX)
+endif()
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 find_package(Torch REQUIRED)

@@ -26,6 +26,10 @@
 #include "defines.inc"
 #include "torch_proxy.h"
 
+#ifdef __TORCH_FTN_USE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 #ifndef NDEBUG
 #define __TORCH_FTN_DEBUG 1
 #endif
@@ -53,9 +57,13 @@ bool is_present_flag(int flags, int probe) {
 }
     
 bool is_device_ptr(void* ptr) {
+#ifdef __TORCH_FTN_USE_CUDA
     cudaPointerAttributes attributes;
     cudaPointerGetAttributes(&attributes, ptr);
     return attributes.devicePointer != NULL;
+#else
+    return false;
+#endif
 }
 
 template<typename T>

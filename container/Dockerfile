@@ -19,27 +19,24 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-FROM nvcr.io/nvidia/pytorch:21.09-py3
+FROM nvcr.io/nvidia/pytorch:22.07-py3
 
-RUN conda install -c anaconda netcdf4
-
-# NVIDIA HPC SDK version 21.9
+# NVIDIA HPC SDK version 22.7
 RUN apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bc \
-        debianutils \
-        g++ \
-        gcc \
-        gfortran \
-        libatomic1 \
-        libnuma1 \
-        openssh-client \
-        wget && \
+        ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /var/tmp && wget -q -nc --no-check-certificate -P /var/tmp https://developer.download.nvidia.com/hpc-sdk/21.9/nvhpc_2021_219_Linux_x86_64_cuda_11.4.tar.gz && \
-    mkdir -p /var/tmp && tar -x -f /var/tmp/nvhpc_2021_219_Linux_x86_64_cuda_11.4.tar.gz -C /var/tmp -z && \
-    cd /var/tmp/nvhpc_2021_219_Linux_x86_64_cuda_11.4 && NVHPC_ACCEPT_EULA=accept NVHPC_DEFAULT_CUDA=11.4 NVHPC_INSTALL_DIR=/opt/nvidia/hpc_sdk NVHPC_SILENT=true ./install && \
-    rm -rf /var/tmp/nvhpc_2021_219_Linux_x86_64_cuda_11.4 /var/tmp/nvhpc_2021_219_Linux_x86_64_cuda_11.4.tar.gz
+RUN echo "deb [trusted=yes] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /" >> /etc/apt/sources.list.d/hpccm.list && \
+    apt-get update -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        nvhpc-22-7 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN cuda_path=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/*/cuda -maxdepth 1 -name '??.?' -type d) && \
+    rm -r $cuda_path && \
+    ln -s /usr/local/cuda $cuda_path
+
+ENV LD_PRELOAD=$LD_PRELOAD:/opt/nvidia/hpc_sdk/Linux_x86_64/22.7/compilers/lib/libaccnotify.so
 
 RUN apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
