@@ -130,7 +130,7 @@ program polynomial
         if (mod(batch_idx, 100) == 0) then
             print "(A,I6,A,F9.6)", "Batch ",batch_idx," loss is ",loss
         end if
-        if (loss < 1e-5) exit
+        if (loss < 1e-3) exit
     end do
 
     if (batch_idx < max_batch_id) then
