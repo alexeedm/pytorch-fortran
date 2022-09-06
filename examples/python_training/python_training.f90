@@ -23,6 +23,8 @@ program python_training
     use torch_ftn
     use iso_fortran_env
 
+    implicit none
+
     integer :: n
     type(torch_pymodule) :: torch_pymod
     type(torch_tensor) :: t_in, t_out, t_target

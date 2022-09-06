@@ -23,6 +23,8 @@ program resnet_forward
     use torch_ftn
     use iso_fortran_env
 
+    implicit none
+
     integer :: n
     type(torch_module) :: torch_mod
     type(torch_tensor) :: in_tensor, out_tensor
