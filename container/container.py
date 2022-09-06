@@ -76,14 +76,17 @@ def build_gnu(stage, args):
     import requests
     import re
     import json
-    from natsort import natsorted
 
     # Trying to identify the latest Pytorch tag
     pytorch_tag = args.pytorch_tag
     if (not pytorch_tag):
-        response = json.loads(requests.get(r'https://registry.hub.docker.com/v1/repositories/pytorch/pytorch/tags').text)
-        versions = [cont['name'] for cont in response if ('devel' in cont['name'] and 'nightly' not in cont['name'])]
-        pytorch_tag = natsorted(versions)[-1]
+        try:
+            from natsort import natsorted
+            response = json.loads(requests.get(r'https://registry.hub.docker.com/v1/repositories/pytorch/pytorch/tags').text)
+            versions = [cont['name'] for cont in response if ('devel' in cont['name'] and 'nightly' not in cont['name'])]
+            pytorch_tag = natsorted(versions)[-1]
+        except:
+            pass
     if (not pytorch_tag):
         logging.critical('Could not determine the latest PyTorch container tag, please provide it via --pytorch-tag argument')
 
@@ -149,7 +152,13 @@ p_nvhpc.set_defaults(function=build_nvhpc)
 
 ################################################
 
-logging.basicConfig(level=logging.INFO)
+class ExitOnExceptionHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        if record.levelno in (logging.ERROR, logging.CRITICAL):
+            raise SystemExit(-1)
+
+logging.basicConfig(handlers=[ExitOnExceptionHandler()], level=logging.INFO)
 
 args = parser.parse_args()
 hpccm.config.set_container_format(args.format)
