@@ -29,6 +29,12 @@ extern "C" {
     void torch_module_save_cpp(void* h_module, char* filename);
     void torch_module_free_cpp(void* h_module);
 
+    void torch_pymodule_load_cpp(void** h_module, const char* file_name);
+    void torch_pymodule_forward_cpp(void* h_module, void* h_input, void** h_output);
+    void torch_pymodule_train_cpp(void* h_module, void* h_input, void* h_target, bool* is_completed, float* loss);
+    void torch_pymodule_save_cpp(void* h_module, char* filename);
+    void torch_pymodule_free_cpp(void* h_module);
+
     void torch_tensor_from_array_float_cpp(void** handle,
         void*  array, int arr_rank, int* arr_shape, int elem_type, int elem_size);
     void torch_tensor_to_array_cpp  (void* handle,

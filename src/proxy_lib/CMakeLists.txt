@@ -23,7 +23,7 @@ cmake_minimum_required(VERSION 3.13)
 
 # C++ library should be built with the same compiler as Pytorch
 if (OPENACC)
-project(PyTorch-ProxyLib LANGUAGES CXX CUDA)
+    project(PyTorch-ProxyLib LANGUAGES CXX CUDA)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__TORCH_FTN_USE_CUDA")
 else()
     project(PyTorch-ProxyLib LANGUAGES CXX)
@@ -31,6 +31,8 @@ endif()
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 find_package(Torch REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+find_package(pybind11 REQUIRED)
 
 # CUDA architecture
 if(NOT DEFINED CUDA_ARCH_LIST)
@@ -49,7 +51,16 @@ set_target_properties(pytorch_proxy PROPERTIES
                                   CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCH_LIST})
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -Wall")
+
+# We need libtorch_python library for integration with pybind11
+# This library is not included in TORCH_LIBRARIES, so we need to manually include it
+set(filtered_lib ${TORCH_LIBRARIES})
+list(FILTER filtered_lib INCLUDE REGEX ".*libc10.so$")
+string(REPLACE "libc10.so" "" torch_lib_dir ${filtered_lib})
+
 # Includes
+target_link_libraries(pytorch_proxy PRIVATE Python3::Python)
+target_link_libraries(pytorch_proxy PRIVATE "${torch_lib_dir}/libtorch_python.so")
 target_link_libraries(pytorch_proxy PRIVATE "${TORCH_LIBRARIES}")
 target_include_directories(pytorch_proxy PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../common")
 

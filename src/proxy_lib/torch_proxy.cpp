@@ -19,9 +19,13 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#include <filesystem>
+#include <mutex>
+
 #include <torch/torch.h>
 #include <torch/script.h>
-#include <cuda_runtime.h>
+#include <torch/extension.h>
+#include <pybind11/embed.h>
 
 #include "defines.inc"
 #include "torch_proxy.h"
@@ -38,6 +42,7 @@
 #include <cstdarg>
 #endif
 
+namespace py = pybind11;
 
 using ftn_shape_type = int32_t;
 
@@ -87,44 +92,68 @@ torch::Tensor tensor_from_array(const std::vector<ftn_shape_type>& f_shape, T* d
 
 std::unordered_map<void*, void*> device_host_map;
 
+class PyModule {
+public:
+    std::unique_ptr<py::module> py_module;
+    PyModule(const std::string& path, const std::string& module_name) {
+        std::lock_guard lock(mutex);
+        if (initialized) {
+            throw std::runtime_error("Only one PyModule can be opened at a time, trying to open " + module_name);
+        }
+        initialized = true;
+        
+        guard = std::make_unique<py::scoped_interpreter>();
+        auto sys = py::module::import("sys");
+        sys.attr("path").attr("insert")(1, path.c_str());
+        py_module = std::make_unique<py::module>(py::module::import(module_name.c_str()));
+    }
+
+private:
+    std::unique_ptr<py::scoped_interpreter> guard;
+    static std::mutex mutex;
+    static bool initialized;
+};
+
 }
 
 /*
  * Module
  */
 void torch_module_load_cpp(void** h_module, const char* file_name, int flags) {
-    auto module = new torch::jit::Module;
-    debug_print("Loading module from file %s... ", file_name);
-    *module = torch::jit::load(file_name);
+    auto mod = new torch::jit::Module;
+    debug_print("Loading module from file '%s'... ", file_name);
+    *mod = torch::jit::load(file_name);
     if (is_present_flag(flags, TORCH_FTN_MODULE_USE_DEVICE)) {
-         module->to(at::kCUDA);
+         mod->to(at::kCUDA);
     }
-    *h_module = static_cast<void*>(module);
+    *h_module = static_cast<void*>(mod);
     debug_print("done. Handle %p, %s backend\n", *h_module,
         is_present_flag(flags, TORCH_FTN_MODULE_USE_DEVICE) ? "GPU" : "CPU");
 }
 
 void torch_module_forward_cpp(void* h_module, void* h_input, void** h_output, int flags) {
     c10::InferenceMode mode( is_present_flag(flags, TORCH_FTN_MODULE_USE_INFERENCE_MODE) );
-    auto module = static_cast<torch::jit::Module*>(h_module);
+    auto mod = static_cast<torch::jit::Module*>(h_module);
     auto input  = static_cast<torch::Tensor*>(h_input);
     auto output = new torch::Tensor;
 
-    debug_print("Module %p :: forward\n", h_module);
+    debug_print("Module %p :: forward(in: %p)\n", h_module, h_input);
     std::vector<torch::jit::IValue> inputs{*input};
-    *output = module->forward(inputs).toTensor().contiguous();
+    *output = mod->forward(inputs).toTensor().contiguous();
     *h_output = static_cast<void*>(output);
 }
 
 void torch_module_train_cpp(void* h_module, void* h_input, void* h_target, void* h_optimizer, float* loss) {
-    auto module = static_cast<torch::jit::Module*>(h_module);
+    auto mod = static_cast<torch::jit::Module*>(h_module);
     auto input  = static_cast<torch::Tensor*>(h_input);
     auto target = static_cast<torch::Tensor*>(h_target);
     auto optim  = static_cast<torch::optim::Optimizer*>(h_optimizer);
 
+    debug_print("Module %p :: train(in: %p, target: %p)\n", h_module, h_target);
+
     optim->zero_grad();
     std::vector<torch::jit::IValue> inputs{*input};
-    auto prediction = module->forward(inputs).toTensor();
+    auto prediction = mod->forward(inputs).toTensor();
     auto loss_tensor = torch::nn::functional::mse_loss(prediction, *target);
     loss_tensor.backward();
     optim->step();
@@ -132,8 +161,8 @@ void torch_module_train_cpp(void* h_module, void* h_input, void* h_target, void*
 }
 
 void torch_module_save_cpp(void* h_module, char* filename) {
-    auto module = static_cast<torch::jit::Module*>(h_module);
-    module->save(filename);
+    auto mod = static_cast<torch::jit::Module*>(h_module);
+    mod->save(filename);
 }
 
 void torch_module_free_cpp(void* h_module) {
@@ -141,14 +170,70 @@ void torch_module_free_cpp(void* h_module) {
 }
 
 /*
+ * Python Module
+ */
+
+bool PyModule::initialized = false;
+std::mutex PyModule::mutex;
+
+void torch_pymodule_load_cpp(void** h_module, const char* file_name) {
+
+    std::filesystem::path path(file_name);
+    auto folder = std::filesystem::absolute(path).parent_path().string();
+    auto module_name = path.stem();
+
+    debug_print("Loading Python module from file '%s': folder '%s' module name '%s' ",
+        file_name, folder.c_str(), module_name.c_str());
+
+    auto mod = new PyModule(folder, module_name);
+    *h_module = static_cast<void*>(mod);
+    debug_print("done. Handle %p\n", h_module);
+}
+
+void torch_pymodule_forward_cpp(void* h_module, void* h_input, void** h_output) {
+    auto mod = static_cast<PyModule*>(h_module);
+    auto input  = static_cast<torch::Tensor*>(h_input);
+    auto output = new torch::Tensor;
+
+    debug_print("PyModule %p :: forward(in: %p)\n", h_module, h_input);
+    *output = mod->py_module->attr("ftn_pytorch_forward")(*input).cast<torch::Tensor>();
+    *h_output = static_cast<void*>(output);
+}
+
+void torch_pymodule_train_cpp(void* h_module, void* h_input, void* h_target, bool* is_completed, float* loss) {
+    auto mod     = static_cast<PyModule*>(h_module);
+    auto input   = static_cast<torch::Tensor*>(h_input);
+    auto target  = static_cast<torch::Tensor*>(h_target);
+
+    debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_target);
+    auto res = mod->py_module->attr("ftn_pytorch_train")(*target);
+    auto res_tuple = res.cast<std::tuple<bool, float>>();
+
+    *is_completed = std::get<0>(res_tuple);
+    *loss         = std::get<1>(res_tuple);
+}
+
+void torch_pymodule_save_cpp(void* h_module, char* filename) {
+    auto mod = static_cast<PyModule*>(h_module);
+    debug_print("PyModule %p :: save\n", h_module);
+    mod->py_module->attr("ftn_pytorch_save")(filename);
+}
+
+void torch_pymodule_free_cpp(void* h_module) {
+    auto mod = static_cast<PyModule*>(h_module);
+    debug_print("Destroying PyModule %p\n", h_module);
+    delete mod;
+}
+
+/*
  * Miscellaneous
  */
 void torch_optimizer_create_sgd_cpp(void** handle, void* h_module, float lr) {
-    auto module = static_cast<torch::jit::Module*>(h_module);
+    auto mod = static_cast<torch::jit::Module*>(h_module);
 
     // https://github.com/pytorch/pytorch/issues/28478
     std::vector<at::Tensor> parameters;
-    for (const auto& param : module->parameters()) {
+    for (const auto& param : mod->parameters()) {
         parameters.push_back(param);
     }
     torch::optim::Optimizer* optimizer = new torch::optim::SGD(parameters, lr);

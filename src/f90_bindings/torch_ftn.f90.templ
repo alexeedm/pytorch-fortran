@@ -32,7 +32,7 @@ module torch_ftn
 
     implicit none
 
-    public torch_module, torch_tensor
+    public torch_module, torch_pymodule, torch_tensor
            
     type :: torch_module
     private
@@ -45,6 +45,17 @@ module torch_ftn
         procedure :: create_optimizer_sgd => torch_module_create_optimizer_sgd
         procedure :: save                 => torch_module_save
         final     :: torch_module_free
+    end type
+
+    type :: torch_pymodule
+    private
+        type(c_ptr) :: handle
+    contains
+        procedure :: load                 => torch_pymodule_load
+        procedure :: forward              => torch_pymodule_forward
+        procedure :: train                => torch_pymodule_train
+        procedure :: save                 => torch_pymodule_save
+        final     :: torch_pymodule_free
     end type
 
     type :: torch_tensor
@@ -110,7 +121,6 @@ module torch_ftn
             type(c_ptr),    intent(in), value :: input
             type(c_ptr),    intent(out)       :: output
             integer(c_int), intent(in), value :: flags
-
         end subroutine
     end interface
 
@@ -124,7 +134,6 @@ module torch_ftn
             type(c_ptr),    intent(in), value :: target
             type(c_ptr),    intent(in), value :: optimizer
             real(c_float),  intent(out)       :: loss
-
         end subroutine
     end interface
     
@@ -136,7 +145,6 @@ module torch_ftn
             type(c_ptr),    intent(inout)     :: handle
             type(c_ptr),    intent(in), value :: module
             real(c_float),  intent(in), value :: lr
-
         end subroutine
     end interface
 
@@ -146,6 +154,66 @@ module torch_ftn
             
             import c_ptr
             type(c_ptr), intent(in), value :: handle
+        end subroutine
+    end interface
+
+    !!======================================================================================
+    !! PyModule-related C bindings
+    !!======================================================================================
+
+    interface
+        subroutine torch_pymodule_load_cpp(handle, file_name) &
+            bind(c, name="torch_pymodule_load_cpp")
+            
+            import c_ptr, c_char
+            type(c_ptr),       intent(inout)     :: handle
+            character(c_char), intent(in)        :: file_name(*)
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_pymodule_forward_cpp(module, input, output) &
+            bind(c, name="torch_pymodule_forward_cpp")
+
+            import c_ptr
+            type(c_ptr),    intent(in), value :: module
+            type(c_ptr),    intent(in), value :: input
+            type(c_ptr),    intent(out)       :: output
+        end subroutine
+    end interface
+
+
+    interface
+        subroutine torch_pymodule_train_cpp(module, input, target, is_completed, loss) &
+            bind(c, name="torch_pymodule_train_cpp")
+
+            import c_ptr, c_bool, c_float
+            type(c_ptr),     intent(in), value :: module
+            type(c_ptr),     intent(in), value :: input
+            type(c_ptr),     intent(in), value :: target
+            logical(c_bool), intent(out)       :: is_completed
+            real(c_float),   intent(out)       :: loss
+        end subroutine
+    end interface
+
+
+    interface
+        subroutine torch_pymodule_save_cpp(module, file_name) &
+            bind(c, name="torch_pymodule_save_cpp")
+
+            import c_ptr, c_char
+            type(c_ptr),       intent(in), value :: module
+            character(c_char), intent(in)        :: file_name(*)
+        end subroutine
+    end interface
+
+
+    interface
+        subroutine torch_pymodule_free_cpp(module) &
+            bind(c, name="torch_pymodule_free_cpp")
+
+            import c_ptr
+            type(c_ptr), intent(in), value :: module
         end subroutine
     end interface
 
@@ -224,7 +292,7 @@ module torch_ftn
         if (present(flags)) then
             actual_flags = flags
         end if
-        
+
         call torch_module_load_cpp(this%handle, file_name//c_null_char, actual_flags)
     end subroutine
 
@@ -271,6 +339,51 @@ module torch_ftn
         type(torch_module) :: this
 
         call torch_module_free_cpp(this%handle)
+    end subroutine
+
+    !!======================================================================================
+    !! PyModule member subroutines
+    !!======================================================================================
+
+    subroutine torch_pymodule_load(this, file_name)
+        class(torch_pymodule), intent(inout) :: this
+        character(len=*),      intent(in)    :: file_name
+
+        call torch_pymodule_load_cpp(this%handle, file_name//c_null_char)
+    end subroutine
+
+    subroutine torch_pymodule_save(this, file_name)
+        class(torch_pymodule), intent(in) :: this
+        character(len=*),    intent(in) :: file_name
+        
+        call torch_pymodule_save_cpp(this%handle, file_name//c_null_char)
+    end subroutine
+
+    subroutine torch_pymodule_forward(this, input, output)
+        class(torch_pymodule), intent(inout) :: this
+        type(torch_tensor),   intent(in)    :: input
+        type(torch_tensor),   intent(out)   :: output
+
+        call torch_pymodule_forward_cpp(this%handle, input%handle, output%handle)
+    end subroutine
+
+    function torch_pymodule_train(this, input, target, loss) result(is_completed)
+        class(torch_pymodule), intent(inout) :: this
+        type(torch_tensor),    intent(in)    :: input
+        type(torch_tensor),    intent(in)    :: target
+        real(real32), intent(out)            :: loss
+        logical                              :: is_completed
+
+        logical(c_bool) :: temp
+
+        call torch_pymodule_train_cpp(this%handle, input%handle, target%handle, temp, loss)
+        is_completed = logical(temp)
+    end function
+
+    subroutine torch_pymodule_free(this)
+        type(torch_pymodule) :: this
+
+        call torch_pymodule_free_cpp(this%handle)
     end subroutine
 
     !!======================================================================================

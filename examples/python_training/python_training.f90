@@ -19,22 +19,24 @@
 ! FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 ! DEALINGS IN THE SOFTWARE.
 
-program resnet_forward
+program python_training
     use torch_ftn
     use iso_fortran_env
 
     integer :: n
-    type(torch_module) :: torch_mod
-    type(torch_tensor) :: in_tensor, out_tensor
+    type(torch_pymodule) :: torch_pymod
+    type(torch_tensor) :: t_in, t_out, t_target
 
-    real(real32) :: input(224, 224, 3, 10)
-    real(real32), pointer :: output(:, :)
+    real(real32) :: input(224, 224, 3, 10), target(224)
+    real(real32), pointer :: output(:,:)
+    real(real32) :: loss
+    logical :: is_completed
 
     character(:), allocatable :: filename
     integer :: arglen, stat
 
     if (command_argument_count() /= 1) then
-        print *, "Need to pass a single argument: Pytorch model file name"
+        print *, "Need to pass a single argument: Pytorch model python script name"
         stop
     end if
 
@@ -43,10 +45,17 @@ program resnet_forward
     call get_command_argument(number=1, value=filename, status=stat)
 
     input = 1.0
-    call in_tensor%from_array(input)
-    call torch_mod%load(filename)
-    call torch_mod%forward(in_tensor, out_tensor)
-    call out_tensor%to_array(output)
+    call t_in%from_array(input)
+    call t_target%from_array(target)
 
-    print *, output(1:5, 1)
+    call torch_pymod%load(filename)
+    ! will call Python function ftn_pytorch_forward(input) -> output
+    call torch_pymod%forward(t_in, t_out)
+    call t_out%to_array(output)
+    print *, output
+
+    ! will call Python function ftn_pytorch_train(input, target) -> (is_completed, loss)
+    is_completed = torch_pymod%train(t_in, t_target, loss)
+    print *, is_completed, loss
+
 end program
