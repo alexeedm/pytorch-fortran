@@ -33,9 +33,9 @@ Before running the examples, you'll need to execute `setup-model.py` scripts in 
 With the models saved and ready, run the following:
 ```
 cd /path/to/repository/
-install/bin/resnet_forward examples/resnet_forward/traced_model.pt
-install/bin/polynomial examples/polynomial/traced_model.pt examples/polynomial/your_new_trained_model.pt
-install/bin/python_training  examples/python_training/model.py
+install/bin/resnet_forward ../examples/resnet_forward/traced_model.pt
+install/bin/polynomial ../examples/polynomial/traced_model.pt ../examples/polynomial/your_new_trained_model.pt
+install/bin/python_training  ../examples/python_training/model.py
 ```
 
 ## API
