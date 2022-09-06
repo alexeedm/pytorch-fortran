@@ -22,30 +22,26 @@
 #!/bin/bash
 set -e
 
-# This wrapper uses the NVHPC compiler to build 
+# This wrapper uses the Intel compiler to build 
 # training and inference examples
 #
 # Need to kick off 2 separate cmake builds with different compilers:
 # 1. with GCC, build pytorch C++ wrapper lib that exposes things to Fortran
-# 2. with NVHPC, build fortran bindings that just bind(c) to built lib from (1)
+# 2. with Intel, build fortran bindings that just bind(c) to built lib from (1)
 
-NVPATH=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/??.?)/compilers/bin
 PYPATH=$(find /opt/conda/lib/ -maxdepth 1 -name 'python?.*' -type d)
 CMAKE_PREFIX_PATH="${PYPATH}/site-packages/torch/share/cmake;${PYPATH}/site-packages/pybind11/share/cmake"
 
 CONFIG=Release
-OPENACC=1
+OPENACC=0
 
-# List CUDA compute capabilities
-TORCH_CUDA_ARCH_LIST="7.0 8.0"
-
-BUILD_PATH=$(pwd -P)/nvhpc/
+BUILD_PATH=$(pwd -P)/intel/
 INSTALL_PATH=${1:-$BUILD_PATH/install/}
 mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_example
 # c++ wrappers 
 (
     cd $BUILD_PATH/build_proxy 
-    cmake -DOPENACC=$OPENACC -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH -DTORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST ../../src/proxy_lib
+    cmake -DOPENACC=$OPENACC -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH ../../src/proxy_lib
     cmake --build . --config $CONFIG --parallel
     make install
 )
@@ -54,7 +50,7 @@ mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_e
 (
     export PATH=$NVPATH:$PATH 
     cd $BUILD_PATH/build_fortproxy
-    cmake -DOPENACC=$OPENACC -DCMAKE_Fortran_COMPILER=nvfortran -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$INSTALL_PATH/lib ../../src/f90_bindings/
+    cmake -DOPENACC=$OPENACC -DCMAKE_Fortran_COMPILER=ifort -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$INSTALL_PATH/lib ../../src/f90_bindings/
     cmake --build . --config $CONFIG --parallel
     make install
 )
@@ -63,7 +59,7 @@ mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_e
 (
     export PATH=$NVPATH:$PATH 
     cd $BUILD_PATH/build_example
-    cmake -DOPENACC=$OPENACC -DCMAKE_Fortran_COMPILER=nvfortran -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH ../../examples/
+    cmake -DOPENACC=$OPENACC -DCMAKE_Fortran_COMPILER=ifort -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH ../../examples/
     cmake --build . --config $CONFIG --parallel
     make install
 )

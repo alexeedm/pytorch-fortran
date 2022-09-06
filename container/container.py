@@ -28,12 +28,14 @@ import hpccm.primitives as hp
 import logging
 
 def add_common_packages(stage):
-    stage += hbb.apt_get(ospackages=['vim less gdb cmake'])
+    stage += hbb.apt_get(ospackages=['vim', 'less', 'gdb'])
+    stage += hbb.cmake(eula=True)
 
 def build_nvhpc(stage, args):
     import requests
     import re
 
+    # Trying to identify the latest Pytorch tag
     pytorch_tag = args.pytorch_tag
     if (not pytorch_tag):
         page = requests.get(r'https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch').text
@@ -45,7 +47,7 @@ def build_nvhpc(stage, args):
         logging.critical('Could not determine the latest PyTorch container tag, please provide it via --pytorch-tag argument')
 
     logging.info(f'Using PyTorch tag: {pytorch_tag}')
-    stage += hp.baseimage(image = f'nvcr.io/nvidia/pytorch:{pytorch_tag}', _distro='ubuntu')
+    stage += hp.baseimage(image = f'nvcr.io/nvidia/pytorch:{pytorch_tag}', _distro='ubuntu20')
     
     nvhpc = hbb.nvhpc(eula=True, cuda_multi=False, environment=False)
     try:
@@ -71,12 +73,49 @@ def build_nvhpc(stage, args):
     add_common_packages(stage)
 
 def build_gnu(stage, args):
-    # TODO
+    import requests
+    import re
+    import json
+    from natsort import natsorted
+
+    # Trying to identify the latest Pytorch tag
+    pytorch_tag = args.pytorch_tag
+    if (not pytorch_tag):
+        response = json.loads(requests.get(r'https://registry.hub.docker.com/v1/repositories/pytorch/pytorch/tags').text)
+        versions = [cont['name'] for cont in response if ('devel' in cont['name'] and 'nightly' not in cont['name'])]
+        pytorch_tag = natsorted(versions)[-1]
+    if (not pytorch_tag):
+        logging.critical('Could not determine the latest PyTorch container tag, please provide it via --pytorch-tag argument')
+
+    logging.info(f'Using PyTorch tag: {pytorch_tag}')
+
+    stage += hp.baseimage(image = f'pytorch/pytorch:{pytorch_tag}', _distro='ubuntu20')
     add_common_packages(stage)
+    stage += hbb.gnu(extra_repository=True, version='9')
+    stage += hp.shell(commands = [
+        'conda install -c conda-forge -y pybind11'
+    ])
 
 def build_intel(stage, args):
-    # TODO
+    import requests
+    import re
+
+    stage += hp.baseimage(image = f'intel/intel-optimized-pytorch', _distro='ubuntu20', _as='build')
     add_common_packages(stage)
+
+    oneapi_docker = requests.get(r'https://raw.githubusercontent.com/intel/oneapi-containers/master/images/docker/hpckit/Dockerfile.ubuntu-20.04').text
+    oneapi_patched = re.sub('FROM ubuntu.*as build', '', oneapi_docker)
+    oneapi_patched = re.sub('COPY third-party-programs\.txt.*', '', oneapi_patched)
+    oneapi_patched = re.sub('intel-oneapi-python', '', oneapi_patched)
+    oneapi_patched = re.sub('ENV CONDA_.*', '', oneapi_patched)
+    oneapi_patched = re.sub('FROM ubuntu:.*', 'FROM intel/intel-optimized-pytorch', oneapi_patched)
+    oneapi_patched = re.sub('ENV PYTHONPATH=.*', '', oneapi_patched)
+    oneapi_patched = re.sub('/opt/intel/oneapi/intelpython/latest/bin:', '', oneapi_patched)
+    oneapi_patched = re.sub('/opt/intel/oneapi/intelpython/latest/condabin:', '', oneapi_patched)
+    oneapi_patched = re.sub(r'ENV PATH=(.*)', r'ENV PATH=$PATH:\1', oneapi_patched)
+    oneapi_patched = re.sub(r'ENV LD_LIBRARY_PATH=(.*)', r'ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:\1', oneapi_patched)
+
+    stage += hp.raw(docker = oneapi_patched)
 
 ################################################
 
@@ -97,6 +136,11 @@ p_gnu.set_defaults(function=build_gnu)
 
 p_gnu = subparsers.add_parser('intel', help='Intel compilers: icc and ifort')
 p_gnu.set_defaults(function=build_intel)
+
+p_gnu = subparsers.add_parser('gnu', help='GNU compilers: gcc and gfortran')
+p_gnu.add_argument('--pytorch-tag', type=str, default=None, \
+                    help='Pytorch container tag, see https://hub.docker.com/r/pytorch/pytorch/, default is the latest available')
+p_gnu.set_defaults(function=build_gnu)
 
 p_nvhpc = subparsers.add_parser('nvhpc', help='NVHPC compilers: nvcc and nvfortran')
 p_nvhpc.add_argument('--pytorch-tag', type=str, default=None, \
