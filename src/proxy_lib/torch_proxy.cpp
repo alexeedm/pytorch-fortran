@@ -42,7 +42,11 @@
 #include <cstdarg>
 #endif
 
+/*
+ * Defines and shortcuts
+ */
 namespace py = pybind11;
+using FtnShapeType = int32_t;
 
 using ftn_shape_type = int32_t;
 
@@ -72,7 +76,7 @@ bool is_device_ptr(void* ptr) {
 }
 
 template<typename T>
-torch::Tensor tensor_from_array(const std::vector<ftn_shape_type>& f_shape, T* data) {
+torch::Tensor tensor_from_array(const std::vector<FtnShapeType>& f_shape, T* data) {
     torch::Device            device = torch::kCPU;
     if (is_device_ptr(data)) device = torch::kCUDA;
 
@@ -90,8 +94,16 @@ torch::Tensor tensor_from_array(const std::vector<ftn_shape_type>& f_shape, T* d
     return torch::from_blob(data, shape, [] (void *) {}, device);
 }
 
-std::unordered_map<void*, void*> device_host_map;
+/*
+ * Host-device pointer map
+ */
+using H2DpointerMap = std::unordered_map<void*, void*>;
+H2DpointerMap device_host_map;
+std::mutex h2d_mutex;
 
+/*
+ * Class definitions
+ */
 class PyModule {
 public:
     std::unique_ptr<py::module> py_module;
@@ -149,7 +161,7 @@ void torch_module_train_cpp(void* h_module, void* h_input, void* h_target, void*
     auto target = static_cast<torch::Tensor*>(h_target);
     auto optim  = static_cast<torch::optim::Optimizer*>(h_optimizer);
 
-    debug_print("Module %p :: train(in: %p, target: %p)\n", h_module, h_target);
+    debug_print("Module %p :: train(in: %p, target: %p)\n", h_module, h_input, h_target);
 
     optim->zero_grad();
     std::vector<torch::jit::IValue> inputs{*input};
@@ -196,6 +208,7 @@ void torch_pymodule_forward_cpp(void* h_module, void* h_input, void** h_output) 
     auto output = new torch::Tensor;
 
     debug_print("PyModule %p :: forward(in: %p)\n", h_module, h_input);
+    std::vector<torch::IValue> inputs{*input};
     *output = mod->py_module->attr("ftn_pytorch_forward")(*input).cast<torch::Tensor>();
     *h_output = static_cast<void*>(output);
 }
@@ -205,8 +218,8 @@ void torch_pymodule_train_cpp(void* h_module, void* h_input, void* h_target, boo
     auto input   = static_cast<torch::Tensor*>(h_input);
     auto target  = static_cast<torch::Tensor*>(h_target);
 
-    debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_target);
-    auto res = mod->py_module->attr("ftn_pytorch_train")(*target);
+    debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_input, h_target);
+    auto res = mod->py_module->attr("ftn_pytorch_train")(*input, *target);
     auto res_tuple = res.cast<std::tuple<bool, float>>();
 
     *is_completed = std::get<0>(res_tuple);
@@ -247,17 +260,17 @@ void torch_optimizer_free_cpp(void* handle) {
 /*
  * Tensor
  */
-void torch_tensor_from_array_float_cpp(void** handle, void* array, int arr_rank, ftn_shape_type* arr_shape, int elem_type, int elem_size) {
+void torch_tensor_from_array_float_cpp(void** handle, void* array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size) {
     auto tensor = new torch::Tensor;
 
     if        (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 4) {
-        *tensor = tensor_from_array(std::vector<ftn_shape_type>(arr_shape, arr_shape+arr_rank), (float*)  array);
+        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (float*)  array);
     } else if (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 8) {
-        *tensor = tensor_from_array(std::vector<ftn_shape_type>(arr_shape, arr_shape+arr_rank), (double*) array);
+        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (double*) array);
     } else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 4) {
-        *tensor = tensor_from_array(std::vector<ftn_shape_type>(arr_shape, arr_shape+arr_rank), (int32_t*)array);
+        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (int32_t*)array);
     } else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 8) {
-        *tensor = tensor_from_array(std::vector<ftn_shape_type>(arr_shape, arr_shape+arr_rank), (int64_t*)array);
+        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (int64_t*)array);
     } else {
         throw std::runtime_error("No known conversion to tensor from Fortran array with element size "+std::to_string(elem_size));
     }
@@ -266,7 +279,7 @@ void torch_tensor_from_array_float_cpp(void** handle, void* array, int arr_rank,
 }
 
 void torch_tensor_to_array_cpp(void* handle,
-        void** host_ptr, void** device_ptr, int arr_rank, ftn_shape_type* arr_shape, int elem_size) {
+        void** host_ptr, void** device_ptr, int arr_rank, FtnShapeType* arr_shape, int elem_size) {
     auto tensor  = static_cast<torch::Tensor*>(handle);
     
     if (arr_rank != tensor->dim()) {
@@ -287,9 +300,11 @@ void torch_tensor_to_array_cpp(void* handle,
         debug_print("Passing GPU tensor %p to Fortran array\n", handle);
 
         if (device_host_map.find(ptr) == device_host_map.end()) {
+            std::unique_lock<std::mutex> lock(h2d_mutex);
             device_host_map[ptr] = new int8_t[size_bytes];
         }
-        *host_ptr = device_host_map[ptr];
+        // Const .at function is thread safe
+        *host_ptr = const_cast<H2DpointerMap&>(device_host_map).at(ptr);
         *device_ptr = ptr;
     } else {
         debug_print("Passing CPU %p to Fortran array\n", handle);
@@ -306,6 +321,7 @@ void torch_tensor_backward(void* handle) {
 
 void torch_tensor_free_cpp(void* handle, void* host_ptr, void* device_ptr) {
     if (host_ptr != 0 && device_ptr != 0) {
+        std::unique_lock<std::mutex> lock(h2d_mutex);
         delete[] (int8_t*)device_host_map[device_ptr];
         device_host_map.erase(device_ptr);
     }
