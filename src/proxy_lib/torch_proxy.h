@@ -21,6 +21,8 @@
 
 #pragma once
 
+using FtnShapeType = int32_t;
+
 extern "C" {
     void torch_module_load_cpp(void** h_module, const char* file_name, int flags);
     void torch_module_forward_cpp(void* h_module, void* h_input, void** h_output, int flags);
@@ -35,10 +37,18 @@ extern "C" {
     void torch_pymodule_save_cpp(void* h_module, char* filename);
     void torch_pymodule_free_cpp(void* h_module);
 
-    void torch_tensor_from_array_float_cpp(void** handle,
-        void*  array, int arr_rank, int* arr_shape, int elem_type, int elem_size);
+    void torch_tensor_from_array_cpp(void** handle,
+        void*  array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size);
     void torch_tensor_to_array_cpp  (void* handle,
-        void** host_ptr, void** device_ptr, int arr_rank, int* arr_shape, int elem_size);
+        void** host_ptr, void** device_ptr, int arr_rank, FtnShapeType* arr_shape, int elem_size);
     void torch_tensor_free_cpp(void* handle, void* host_ptr, void* device_ptr);
     void* torch_helper_ptr_to_devptr_cpp(void* ptr);
+
+    void torch_tensor_wrap_create_cpp        (void** handle);
+    void torch_tensor_wrap_add_tensor_cpp    (void*  handle, void* h_tensor);
+    void torch_tensor_wrap_add_array_cpp     (void*  handle, void* array, int arr_rank,
+                                              FtnShapeType* arr_shape, int elem_type, int elem_size);
+    void torch_tensor_wrap_add_scalar_cpp    (void*  handle, void* value, int elem_type, int elem_size);
+    void torch_tensor_wrap_clear_cpp         (void*  handle);
+    void torch_tensor_wrap_free_cpp          (void*  handle);
 }

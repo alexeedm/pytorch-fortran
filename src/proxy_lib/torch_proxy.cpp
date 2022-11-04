@@ -25,6 +25,7 @@
 #include <torch/torch.h>
 #include <torch/script.h>
 #include <torch/extension.h>
+#include <torch/csrc/jit/python/pybind.h>
 #include <pybind11/embed.h>
 
 #include "defines.inc"
@@ -46,9 +47,8 @@
  * Defines and shortcuts
  */
 namespace py = pybind11;
-using FtnShapeType = int32_t;
-
-using ftn_shape_type = int32_t;
+using IWrap     = std::vector<torch::IValue>;
+using IWrap_jit = std::vector<torch::jit::IValue>;
 
 /*
  * Private functions
@@ -143,29 +143,42 @@ void torch_module_load_cpp(void** h_module, const char* file_name, int flags) {
         is_present_flag(flags, TORCH_FTN_MODULE_USE_DEVICE) ? "GPU" : "CPU");
 }
 
-void torch_module_forward_cpp(void* h_module, void* h_input, void** h_output, int flags) {
+void torch_module_forward_cpp(void* h_module, void* h_inputs, void** h_output, int flags) {
     c10::InferenceMode mode( is_present_flag(flags, TORCH_FTN_MODULE_USE_INFERENCE_MODE) );
-    auto mod = static_cast<torch::jit::Module*>(h_module);
-    auto input  = static_cast<torch::Tensor*>(h_input);
+    auto mod    = static_cast<torch::jit::Module*>(h_module);
+    auto inputs = static_cast<IWrap*>(h_inputs);
     auto output = new torch::Tensor;
+    IWrap_jit inputs_jit;
 
-    debug_print("Module %p :: forward(in: %p)\n", h_module, h_input);
-    std::vector<torch::jit::IValue> inputs{*input};
-    *output = mod->forward(inputs).toTensor().contiguous();
+    debug_print("Module %p :: forward(in: %p)\n", h_module, h_inputs);
+    debug_print("             %ld inputs:\n", inputs->size());
+
+    inputs_jit.reserve(inputs->size());
+    for (const auto& i : *inputs) {
+        inputs_jit.push_back(i);
+    }
+
+    *output = mod->forward(inputs_jit).toTensor().contiguous();
     *h_output = static_cast<void*>(output);
 }
 
-void torch_module_train_cpp(void* h_module, void* h_input, void* h_target, void* h_optimizer, float* loss) {
+void torch_module_train_cpp(void* h_module, void* h_inputs, void* h_target, void* h_optimizer, float* loss) {
     auto mod = static_cast<torch::jit::Module*>(h_module);
-    auto input  = static_cast<torch::Tensor*>(h_input);
+    auto inputs = static_cast<IWrap*>(h_inputs);
     auto target = static_cast<torch::Tensor*>(h_target);
     auto optim  = static_cast<torch::optim::Optimizer*>(h_optimizer);
+    IWrap_jit inputs_jit;
 
-    debug_print("Module %p :: train(in: %p, target: %p)\n", h_module, h_input, h_target);
+    debug_print("Module %p :: train(in: %p, target: %p)\n", h_module, h_inputs, h_target);
+    debug_print("             %ld inputs:\n", inputs->size());
+
+    inputs_jit.reserve(inputs->size());
+    for (const auto& i : *inputs) {
+        inputs_jit.push_back(i);
+    }
 
     optim->zero_grad();
-    std::vector<torch::jit::IValue> inputs{*input};
-    auto prediction = mod->forward(inputs).toTensor();
+    auto prediction = mod->forward(inputs_jit).toTensor();
     auto loss_tensor = torch::nn::functional::mse_loss(prediction, *target);
     loss_tensor.backward();
     optim->step();
@@ -202,24 +215,23 @@ void torch_pymodule_load_cpp(void** h_module, const char* file_name) {
     debug_print("done. Handle %p\n", h_module);
 }
 
-void torch_pymodule_forward_cpp(void* h_module, void* h_input, void** h_output) {
-    auto mod = static_cast<PyModule*>(h_module);
-    auto input  = static_cast<torch::Tensor*>(h_input);
+void torch_pymodule_forward_cpp(void* h_module, void* h_inputs, void** h_output) {
+    auto mod    = static_cast<PyModule*>(h_module);
+    auto inputs = static_cast<IWrap*>   (h_inputs);
     auto output = new torch::Tensor;
 
-    debug_print("PyModule %p :: forward(in: %p)\n", h_module, h_input);
-    std::vector<torch::IValue> inputs{*input};
-    *output = mod->py_module->attr("ftn_pytorch_forward")(*input).cast<torch::Tensor>();
+    debug_print("PyModule %p :: forward(in: %p)\n", h_module, h_inputs);
+    *output = mod->py_module->attr("ftn_pytorch_forward")(*inputs).cast<torch::Tensor>();
     *h_output = static_cast<void*>(output);
 }
 
-void torch_pymodule_train_cpp(void* h_module, void* h_input, void* h_target, bool* is_completed, float* loss) {
+void torch_pymodule_train_cpp(void* h_module, void* h_inputs, void* h_target, bool* is_completed, float* loss) {
     auto mod     = static_cast<PyModule*>(h_module);
-    auto input   = static_cast<torch::Tensor*>(h_input);
+    auto inputs  = static_cast<IWrap*>(h_inputs);
     auto target  = static_cast<torch::Tensor*>(h_target);
 
-    debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_input, h_target);
-    auto res = mod->py_module->attr("ftn_pytorch_train")(*input, *target);
+    debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_inputs, h_target);
+    auto res = mod->py_module->attr("ftn_pytorch_train")(*inputs, *target);
     auto res_tuple = res.cast<std::tuple<bool, float>>();
 
     *is_completed = std::get<0>(res_tuple);
@@ -260,7 +272,7 @@ void torch_optimizer_free_cpp(void* handle) {
 /*
  * Tensor
  */
-void torch_tensor_from_array_float_cpp(void** handle, void* array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size) {
+void torch_tensor_from_array_cpp(void** handle, void* array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size) {
     auto tensor = new torch::Tensor;
 
     if        (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 4) {
@@ -333,3 +345,51 @@ void* torch_helper_ptr_to_devptr_cpp(void* ptr) {
     return ptr;
 }
 
+/*
+ * IValue vector wrap
+ */
+void torch_tensor_wrap_create_cpp(void** handle) {
+    auto iwrap = new IWrap;
+    debug_print("Created tensor wrap %p\n", iwrap);
+    *handle = static_cast<void*>(iwrap);
+}
+
+void torch_tensor_wrap_add_tensor_cpp(void* handle, void* h_tensor) {
+    auto iwrap  = static_cast<IWrap*>(handle);
+    auto tensor = static_cast<torch::Tensor*>(h_tensor);
+    
+    iwrap->push_back(*tensor);
+}
+
+void torch_tensor_wrap_add_array_cpp(void* handle, void* array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size) {
+    auto iwrap = static_cast<IWrap*>(handle);
+    debug_print("Populating tensor wrap %p\n", iwrap);
+
+    void* h_tensor;
+    torch_tensor_from_array_cpp(&h_tensor, array, arr_rank, arr_shape, elem_type, elem_size);
+    iwrap->push_back(std::move(*static_cast<torch::Tensor*>(h_tensor)));
+}
+
+void torch_tensor_wrap_add_scalar_cpp(void* handle, void* value, int elem_type, int elem_size) {
+    auto iwrap = static_cast<IWrap*>(handle);
+
+    if        (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 4) {
+        iwrap->emplace_back( *static_cast<float*>  (value) );
+    } else if (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 8) {
+        iwrap->emplace_back( *static_cast<double*> (value) );
+    } else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 4) {
+        iwrap->emplace_back( *static_cast<int32_t*>(value) );
+    } else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 8) {
+        iwrap->emplace_back( *static_cast<int64_t*>(value) );
+    } else {
+        throw std::runtime_error("No known conversion from Fortran scalar with element size "+std::to_string(elem_size));
+    }
+}
+
+void torch_tensor_wrap_clear_cpp(void* handle) {
+    static_cast<IWrap*>(handle)->clear();
+}
+
+void torch_tensor_wrap_free_cpp(void* handle) {
+    delete static_cast<IWrap*>(handle);
+}

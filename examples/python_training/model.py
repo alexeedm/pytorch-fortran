@@ -25,8 +25,10 @@ import torchvision
 
 def ftn_pytorch_forward(input):
     print('Hello from python')
+    for i in input:
+        print(i)
     return torch.tensor([[1., -1.], [1., -1.]])
 
-def ftn_pytorch_train(input):
+def ftn_pytorch_train(input, target):
     print('train from python')
     return (True, 42.0)
