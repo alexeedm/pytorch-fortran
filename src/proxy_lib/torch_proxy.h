@@ -24,6 +24,8 @@
 using FtnShapeType = int32_t;
 
 extern "C" {
+    void torch_throw_cpp(const char* message);
+
     void torch_module_load_cpp(void** h_module, const char* file_name, int flags);
     void torch_module_forward_cpp(void* h_module, void* h_input, void** h_output, int flags);
     void torch_module_train_cpp(void* h_module, void* h_input, void* h_target, void* h_optimizer, float* loss);
@@ -41,7 +43,7 @@ extern "C" {
         void*  array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size);
     void torch_tensor_to_array_cpp  (void* handle,
         void** host_ptr, void** device_ptr, int arr_rank, FtnShapeType* arr_shape, int elem_size);
-    void torch_tensor_free_cpp(void* handle, void* host_ptr, void* device_ptr);
+    void torch_tensor_free_cpp(void* handle);
     void* torch_helper_ptr_to_devptr_cpp(void* ptr);
 
     void torch_tensor_wrap_create_cpp        (void** handle);

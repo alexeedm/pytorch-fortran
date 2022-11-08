@@ -47,8 +47,8 @@
  * Defines and shortcuts
  */
 namespace py = pybind11;
-using IWrap     = std::vector<torch::IValue>;
-using IWrap_jit = std::vector<torch::jit::IValue>;
+using IWrap  = std::vector<torch::IValue>;
+using Scratch = std::vector<char>;
 
 /*
  * Private functions
@@ -75,38 +75,70 @@ bool is_device_ptr(void* ptr) {
 #endif
 }
 
-template<typename T>
-torch::Tensor tensor_from_array(const std::vector<FtnShapeType>& f_shape, T* data) {
-    torch::Device            device = torch::kCPU;
-    if (is_device_ptr(data)) device = torch::kCUDA;
+/*
+ * Device to host scratch map
+ */
+using D2HScratchMap = std::unordered_map<void*, std::shared_ptr<Scratch>>;
+D2HScratchMap device_scratch_map;
+std::mutex h2s_mutex;
 
-    std::vector<int64_t> shape(f_shape.size());
-    for (size_t i=0; i<f_shape.size(); i++) {
-        shape[i] = f_shape[ f_shape.size() - (i+1) ];
+void update_map(void* ptr, std::shared_ptr<Scratch>& p_scratch) {
+    if (device_scratch_map.find(ptr) == device_scratch_map.end() ||
+        // Use const .at accessor for thread safety
+        const_cast<D2HScratchMap&>(device_scratch_map).at(ptr) != p_scratch)
+    {
+        std::unique_lock<std::mutex> lock(h2s_mutex);
+        device_scratch_map[ptr] = p_scratch;
+    }
+}
+
+torch::Tensor tensor_from_array(void* array,
+    int arr_rank, FtnShapeType* ftn_shape, int elem_type, int elem_size) {
+
+    // Reverse axes fortran -> c
+    std::vector<int64_t> torch_shape(arr_rank);
+    for (int i=0; i<arr_rank; i++) {
+        torch_shape[i] = ftn_shape[ arr_rank - (i+1) ];
     }
 
-    debug_print("Creating %s tensor with shape [", device == torch::kCPU ? "CPU" : "GPU");
-    for (auto s : shape) {
+    // Select device
+    bool is_on_gpu = is_device_ptr(array);
+    torch::TensorOptions  options = torch::TensorOptions().device(torch::kCPU);
+    if (is_on_gpu)        options = torch::TensorOptions().device(torch::kCUDA);
+
+    // Select data type
+    if      (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 4) { options = options.dtype(torch::kFloat32); }
+    else if (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 8) { options = options.dtype(torch::kFloat64); }
+    else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 4) { options = options.dtype(torch::kInt32);   }
+    else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 8) { options = options.dtype(torch::kInt64);   }
+    else {
+        throw std::runtime_error("No known conversion to tensor from Fortran array with element size "+std::to_string(elem_size));
+    }
+
+    debug_print("Creating %s tensor with shape [", is_on_gpu ? "GPU" : "CPU");
+    for (auto s : torch_shape) {
         debug_print("%lu ", s);
     }
     debug_print("]\n");
 
-    return torch::from_blob(data, shape, [] (void *) {}, device);
+    return torch::from_blob(array, torch_shape, [] (void *) {}, options);
 }
-
-/*
- * Host-device pointer map
- */
-using H2DpointerMap = std::unordered_map<void*, void*>;
-H2DpointerMap device_host_map;
-std::mutex h2d_mutex;
 
 /*
  * Class definitions
  */
+
+struct JITModule {
+public:
+    torch::jit::Module jit_module;
+    std::shared_ptr<Scratch> host_cache;
+};
+
 class PyModule {
 public:
-    std::unique_ptr<py::module> py_module;
+    py::module py_module;
+    std::shared_ptr<Scratch> host_cache;
+
     PyModule(const std::string& path, const std::string& module_name) {
         std::lock_guard lock(mutex);
         if (initialized) {
@@ -117,8 +149,10 @@ public:
         guard = std::make_unique<py::scoped_interpreter>();
         auto sys = py::module::import("sys");
         sys.attr("path").attr("insert")(1, path.c_str());
-        py_module = std::make_unique<py::module>(py::module::import(module_name.c_str()));
+        py_module = py::module::import(module_name.c_str());
     }
+
+    ~PyModule() = default;
 
 private:
     std::unique_ptr<py::scoped_interpreter> guard;
@@ -129,14 +163,25 @@ private:
 }
 
 /*
+ * Exceptions initiated from Fortran
+ */
+void torch_throw_cpp(const char* message) {
+    throw std::runtime_error(message);
+}
+
+/*
  * Module
  */
 void torch_module_load_cpp(void** h_module, const char* file_name, int flags) {
-    auto mod = new torch::jit::Module;
+    // Free memory if we're loading a new module
+    torch_module_free_cpp(*h_module);
+    auto mod = new JITModule;
+    mod->host_cache = std::make_shared<Scratch>(0);
+
     debug_print("Loading module from file '%s'... ", file_name);
-    *mod = torch::jit::load(file_name);
+    mod->jit_module = torch::jit::load(file_name);
     if (is_present_flag(flags, TORCH_FTN_MODULE_USE_DEVICE)) {
-         mod->to(at::kCUDA);
+         mod->jit_module.to(torch::kCUDA);
     }
     *h_module = static_cast<void*>(mod);
     debug_print("done. Handle %p, %s backend\n", *h_module,
@@ -145,40 +190,26 @@ void torch_module_load_cpp(void** h_module, const char* file_name, int flags) {
 
 void torch_module_forward_cpp(void* h_module, void* h_inputs, void** h_output, int flags) {
     c10::InferenceMode mode( is_present_flag(flags, TORCH_FTN_MODULE_USE_INFERENCE_MODE) );
-    auto mod    = static_cast<torch::jit::Module*>(h_module);
+    auto mod    = static_cast<JITModule*>(h_module);
     auto inputs = static_cast<IWrap*>(h_inputs);
-    auto output = new torch::Tensor;
-    IWrap_jit inputs_jit;
 
-    debug_print("Module %p :: forward(in: %p)\n", h_module, h_inputs);
-    debug_print("             %ld inputs:\n", inputs->size());
+    debug_print("Module %p :: forward(in: %p * %ld)\n", h_module, h_inputs, inputs->size());
 
-    inputs_jit.reserve(inputs->size());
-    for (const auto& i : *inputs) {
-        inputs_jit.push_back(i);
-    }
-
-    *output = mod->forward(inputs_jit).toTensor().contiguous();
-    *h_output = static_cast<void*>(output);
+    if (*h_output == nullptr) { *h_output = static_cast<void*>(new torch::Tensor); }
+    auto p_tensor = static_cast<torch::Tensor*>(*h_output);
+    *p_tensor = mod->jit_module.forward(*inputs).toTensor().contiguous();
+    update_map(p_tensor->data_ptr(), mod->host_cache);
 }
 
 void torch_module_train_cpp(void* h_module, void* h_inputs, void* h_target, void* h_optimizer, float* loss) {
-    auto mod = static_cast<torch::jit::Module*>(h_module);
+    auto mod = static_cast<JITModule*>(h_module);
     auto inputs = static_cast<IWrap*>(h_inputs);
     auto target = static_cast<torch::Tensor*>(h_target);
     auto optim  = static_cast<torch::optim::Optimizer*>(h_optimizer);
-    IWrap_jit inputs_jit;
 
-    debug_print("Module %p :: train(in: %p, target: %p)\n", h_module, h_inputs, h_target);
-    debug_print("             %ld inputs:\n", inputs->size());
-
-    inputs_jit.reserve(inputs->size());
-    for (const auto& i : *inputs) {
-        inputs_jit.push_back(i);
-    }
-
+    debug_print("Module %p :: train(in: %p * %ld, target: %p)\n", h_module, h_inputs, inputs->size(), h_target);
     optim->zero_grad();
-    auto prediction = mod->forward(inputs_jit).toTensor();
+    auto prediction = mod->jit_module.forward(*inputs).toTensor();
     auto loss_tensor = torch::nn::functional::mse_loss(prediction, *target);
     loss_tensor.backward();
     optim->step();
@@ -186,12 +217,12 @@ void torch_module_train_cpp(void* h_module, void* h_inputs, void* h_target, void
 }
 
 void torch_module_save_cpp(void* h_module, char* filename) {
-    auto mod = static_cast<torch::jit::Module*>(h_module);
-    mod->save(filename);
+    auto mod = static_cast<JITModule*>(h_module);
+    mod->jit_module.save(filename);
 }
 
 void torch_module_free_cpp(void* h_module) {
-    delete static_cast<torch::jit::Module*>(h_module);
+    delete static_cast<JITModule*>(h_module);
 }
 
 /*
@@ -202,7 +233,6 @@ bool PyModule::initialized = false;
 std::mutex PyModule::mutex;
 
 void torch_pymodule_load_cpp(void** h_module, const char* file_name) {
-
     std::filesystem::path path(file_name);
     auto folder = std::filesystem::absolute(path).parent_path().string();
     auto module_name = path.stem();
@@ -210,7 +240,11 @@ void torch_pymodule_load_cpp(void** h_module, const char* file_name) {
     debug_print("Loading Python module from file '%s': folder '%s' module name '%s' ",
         file_name, folder.c_str(), module_name.c_str());
 
+    // Free memory if we're loading a new module
+    torch_pymodule_free_cpp(*h_module);
     auto mod = new PyModule(folder, module_name);
+    mod->host_cache = std::make_shared<Scratch>(0);
+
     *h_module = static_cast<void*>(mod);
     debug_print("done. Handle %p\n", h_module);
 }
@@ -218,11 +252,13 @@ void torch_pymodule_load_cpp(void** h_module, const char* file_name) {
 void torch_pymodule_forward_cpp(void* h_module, void* h_inputs, void** h_output) {
     auto mod    = static_cast<PyModule*>(h_module);
     auto inputs = static_cast<IWrap*>   (h_inputs);
-    auto output = new torch::Tensor;
 
     debug_print("PyModule %p :: forward(in: %p)\n", h_module, h_inputs);
-    *output = mod->py_module->attr("ftn_pytorch_forward")(*inputs).cast<torch::Tensor>();
-    *h_output = static_cast<void*>(output);
+    
+    if (*h_output == nullptr) { *h_output = static_cast<void*>(new torch::Tensor); }
+    auto p_tensor = static_cast<torch::Tensor*>(*h_output);
+    *p_tensor = mod->py_module.attr("ftn_pytorch_forward")(*inputs).cast<torch::Tensor>();
+    update_map(p_tensor->data_ptr(), mod->host_cache);
 }
 
 void torch_pymodule_train_cpp(void* h_module, void* h_inputs, void* h_target, bool* is_completed, float* loss) {
@@ -231,7 +267,7 @@ void torch_pymodule_train_cpp(void* h_module, void* h_inputs, void* h_target, bo
     auto target  = static_cast<torch::Tensor*>(h_target);
 
     debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_inputs, h_target);
-    auto res = mod->py_module->attr("ftn_pytorch_train")(*inputs, *target);
+    auto res = mod->py_module.attr("ftn_pytorch_train")(*inputs, *target);
     auto res_tuple = res.cast<std::tuple<bool, float>>();
 
     *is_completed = std::get<0>(res_tuple);
@@ -241,7 +277,7 @@ void torch_pymodule_train_cpp(void* h_module, void* h_inputs, void* h_target, bo
 void torch_pymodule_save_cpp(void* h_module, char* filename) {
     auto mod = static_cast<PyModule*>(h_module);
     debug_print("PyModule %p :: save\n", h_module);
-    mod->py_module->attr("ftn_pytorch_save")(filename);
+    mod->py_module.attr("ftn_pytorch_save")(filename);
 }
 
 void torch_pymodule_free_cpp(void* h_module) {
@@ -257,7 +293,7 @@ void torch_optimizer_create_sgd_cpp(void** handle, void* h_module, float lr) {
     auto mod = static_cast<torch::jit::Module*>(h_module);
 
     // https://github.com/pytorch/pytorch/issues/28478
-    std::vector<at::Tensor> parameters;
+    std::vector<torch::Tensor> parameters;
     for (const auto& param : mod->parameters()) {
         parameters.push_back(param);
     }
@@ -272,21 +308,13 @@ void torch_optimizer_free_cpp(void* handle) {
 /*
  * Tensor
  */
-void torch_tensor_from_array_cpp(void** handle, void* array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size) {
+void torch_tensor_from_array_cpp(void** handle,
+        void* array, int arr_rank, FtnShapeType* ftn_shape, int elem_type, int elem_size) {
+    
+    // Free memory if we're reusing the tensor handle
+    if (*handle) { torch_tensor_free_cpp(*handle); }
     auto tensor = new torch::Tensor;
-
-    if        (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 4) {
-        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (float*)  array);
-    } else if (elem_type == TORCH_FTN_TYPE_FP  && elem_size == 8) {
-        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (double*) array);
-    } else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 4) {
-        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (int32_t*)array);
-    } else if (elem_type == TORCH_FTN_TYPE_INT && elem_size == 8) {
-        *tensor = tensor_from_array(std::vector<FtnShapeType>(arr_shape, arr_shape+arr_rank), (int64_t*)array);
-    } else {
-        throw std::runtime_error("No known conversion to tensor from Fortran array with element size "+std::to_string(elem_size));
-    }
-
+    *tensor = tensor_from_array(array, arr_rank, ftn_shape, elem_type, elem_size);
     *handle = static_cast<void*>(tensor);
 }
 
@@ -300,10 +328,10 @@ void torch_tensor_to_array_cpp(void* handle,
     }
     
     // Reverse the axes for Fortran
-    size_t size_bytes = 0;
+    size_t size_bytes = 1;
     for (int d=0; d<arr_rank; d++) {
         arr_shape[arr_rank - (d+1)] = tensor->size(d);
-        size_bytes += tensor->size(d);
+        size_bytes *= tensor->size(d);
     }
     size_bytes *= elem_size;
 
@@ -311,12 +339,18 @@ void torch_tensor_to_array_cpp(void* handle,
     if (is_device_ptr(ptr)) {
         debug_print("Passing GPU tensor %p to Fortran array\n", handle);
 
-        if (device_host_map.find(ptr) == device_host_map.end()) {
-            std::unique_lock<std::mutex> lock(h2d_mutex);
-            device_host_map[ptr] = new int8_t[size_bytes];
+        if (device_scratch_map.find(ptr) == device_scratch_map.end()) {
+            // The tensor is not from the module output, create its own host scratch space
+            std::unique_lock<std::mutex> lock(h2s_mutex);
+            device_scratch_map[ptr] = std::make_shared<Scratch>(size_bytes);
         }
         // Const .at function is thread safe
-        *host_ptr = const_cast<H2DpointerMap&>(device_host_map).at(ptr);
+        auto& scratch = const_cast<D2HScratchMap&>(device_scratch_map).at(ptr);
+        if (scratch->size() < size_bytes) {
+            std::unique_lock<std::mutex> lock(h2s_mutex);
+            scratch->resize(size_bytes);
+        }
+        *host_ptr = scratch->data();
         *device_ptr = ptr;
     } else {
         debug_print("Passing CPU %p to Fortran array\n", handle);
@@ -331,13 +365,15 @@ void torch_tensor_backward(void* handle) {
     tensor->backward();
 }
 
-void torch_tensor_free_cpp(void* handle, void* host_ptr, void* device_ptr) {
-    if (host_ptr != 0 && device_ptr != 0) {
-        std::unique_lock<std::mutex> lock(h2d_mutex);
-        delete[] (int8_t*)device_host_map[device_ptr];
-        device_host_map.erase(device_ptr);
+void torch_tensor_free_cpp(void* handle) {
+    auto tensor = static_cast<torch::Tensor*>(handle);
+    void* ptr = tensor->data_ptr();
+    
+    if (device_scratch_map.find(ptr) != device_scratch_map.end()) {
+        std::unique_lock<std::mutex> lock(h2s_mutex);
+        device_scratch_map.erase(ptr);
     }
-    delete static_cast<torch::Tensor*>(handle);
+    delete tensor;
 }
 
 void* torch_helper_ptr_to_devptr_cpp(void* ptr) {
@@ -349,6 +385,9 @@ void* torch_helper_ptr_to_devptr_cpp(void* ptr) {
  * IValue vector wrap
  */
 void torch_tensor_wrap_create_cpp(void** handle) {
+    // Free memory if we're loading a new module
+    torch_tensor_wrap_free_cpp(*handle);
+
     auto iwrap = new IWrap;
     debug_print("Created tensor wrap %p\n", iwrap);
     *handle = static_cast<void*>(iwrap);
@@ -364,10 +403,7 @@ void torch_tensor_wrap_add_tensor_cpp(void* handle, void* h_tensor) {
 void torch_tensor_wrap_add_array_cpp(void* handle, void* array, int arr_rank, FtnShapeType* arr_shape, int elem_type, int elem_size) {
     auto iwrap = static_cast<IWrap*>(handle);
     debug_print("Populating tensor wrap %p\n", iwrap);
-
-    void* h_tensor;
-    torch_tensor_from_array_cpp(&h_tensor, array, arr_rank, arr_shape, elem_type, elem_size);
-    iwrap->push_back(std::move(*static_cast<torch::Tensor*>(h_tensor)));
+    iwrap->push_back(tensor_from_array(array, arr_rank, arr_shape, elem_type, elem_size));
 }
 
 void torch_tensor_wrap_add_scalar_cpp(void* handle, void* value, int elem_type, int elem_size) {
