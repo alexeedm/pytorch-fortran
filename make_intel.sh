@@ -41,8 +41,8 @@ mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_e
 # c++ wrappers 
 (
     cd $BUILD_PATH/build_proxy 
-    cmake -DOPENACC=$OPENACC -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH ../../src/proxy_lib
-    cmake --build . --config $CONFIG --parallel
+    cmake -DOPENACC=$OPENACC -DCMAKE_BUILD_TYPE=$CONFIG -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH ../../src/proxy_lib
+    cmake --build . --parallel
     make install
 )
 
@@ -50,8 +50,8 @@ mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_e
 (
     export PATH=$NVPATH:$PATH 
     cd $BUILD_PATH/build_fortproxy
-    cmake -DOPENACC=$OPENACC -DCMAKE_Fortran_COMPILER=ifort -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_PREFIX_PATH=$INSTALL_PATH/lib ../../src/f90_bindings/
-    cmake --build . --config $CONFIG --parallel
+    cmake -DOPENACC=$OPENACC -DCMAKE_BUILD_TYPE=$CONFIG -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_Fortran_COMPILER=ifort -DCMAKE_PREFIX_PATH=$INSTALL_PATH/lib ../../src/f90_bindings/
+    cmake --build . --parallel
     make install
 )
 
@@ -59,7 +59,7 @@ mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_e
 (
     export PATH=$NVPATH:$PATH 
     cd $BUILD_PATH/build_example
-    cmake -DOPENACC=$OPENACC -DCMAKE_Fortran_COMPILER=ifort -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH ../../examples/
-    cmake --build . --config $CONFIG --parallel
+    cmake -DOPENACC=$OPENACC -DCMAKE_BUILD_TYPE=$CONFIG -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_Fortran_COMPILER=ifort ../../examples/
+    cmake --build . --parallel
     make install
 )
