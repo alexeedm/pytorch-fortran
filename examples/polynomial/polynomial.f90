@@ -132,7 +132,7 @@ program polynomial
         if (mod(batch_idx, 100) == 0) then
             print "(A,I6,A,F9.6)", "Batch ",batch_idx," loss is ",loss
         end if
-        if (loss < 1e-3) exit
+        if (loss < 1e-4) exit
     end do
 
     if (batch_idx < max_batch_id) then
@@ -154,7 +154,7 @@ program polynomial
     loss = sum( (target-output)**2 ) / batch_size
     
     print *, target(1,1:4), output(1,1:4)
-    print "(A,F9.6)", "L2 error of the trained model is ", loss
+    print "(A,F9.6)", "Mean squared error of the trained model is ", loss
 
     !$acc end data
 
