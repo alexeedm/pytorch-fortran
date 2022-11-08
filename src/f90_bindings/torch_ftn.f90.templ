@@ -32,11 +32,11 @@ module torch_ftn
 
     implicit none
 
-    public torch_module, torch_pymodule, torch_tensor
+    public torch_module, torch_pymodule, torch_tensor, torch_tensor_wrap
            
     type :: torch_module
     private
-        type(c_ptr) :: handle
+        type(c_ptr) :: handle = c_null_ptr
         type(c_ptr) :: h_optimizer
     contains
         procedure :: load                 => torch_module_load
@@ -49,7 +49,7 @@ module torch_ftn
 
     type :: torch_pymodule
     private
-        type(c_ptr) :: handle
+        type(c_ptr) :: handle = c_null_ptr
     contains
         procedure :: load                 => torch_pymodule_load
         procedure :: forward              => torch_pymodule_forward
@@ -60,7 +60,7 @@ module torch_ftn
 
     type :: torch_tensor
     private
-        type(c_ptr) :: handle
+        type(c_ptr) :: handle   = c_null_ptr
         type(c_ptr) :: host_ptr = c_null_ptr 
         type(c_ptr) :: dev_ptr  = c_null_ptr 
         logical     :: is_acc_mapped
@@ -72,12 +72,33 @@ module torch_ftn
         final :: torch_tensor_free
 
         generic :: from_array   => &
-<%            torch_tensor_from_{dim}_{dt}
+<%          torch_tensor_from_{dims.rank}_{dtype.name}
         generic :: to_array     => &
-<%            torch_tensor_to_{dim}_{dt}
+<%          torch_tensor_to_{dims.rank}_{dtype.name}
 
         procedure, private :: &
-<%            torch_tensor_from_{dim}_{dt}, torch_tensor_to_{dim}_{dt}
+<%          torch_tensor_from_{dims.rank}_{dtype.name}, torch_tensor_to_{dims.rank}_{dtype.name}
+    end type
+
+    type :: torch_tensor_wrap
+    private
+        type(c_ptr) :: handle = c_null_ptr
+    contains  
+        procedure :: create     => torch_tensor_wrap_create
+        procedure :: add_tensor => torch_tensor_wrap_add_tensor 
+
+        generic   :: add_scalar => &
+<%(dtype)   torch_tensor_wrap_add_scalar_{dtype.name}
+        procedure, private :: &
+<%(dtype)   torch_tensor_wrap_add_scalar_{dtype.name}
+
+        generic   :: add_array  => &
+<%          torch_tensor_wrap_add_array_{dims.rank}_{dtype.name}
+        procedure, private :: &
+<%          torch_tensor_wrap_add_array_{dims.rank}_{dtype.name}
+
+        procedure :: clear => torch_tensor_wrap_clear
+        final     :: torch_tensor_wrap_free
     end type
 
     ! Exposed flags and constants
@@ -85,6 +106,14 @@ module torch_ftn
     public module_use_device
     
     private
+
+    interface
+        subroutine torch_throw_cpp(message) &
+            bind(c, name="torch_throw_cpp")
+            import c_char
+            character(c_char), intent(in)        :: message(*)
+        end subroutine
+    end interface
 
     !!======================================================================================
     !! Module-related C bindings
@@ -113,24 +142,24 @@ module torch_ftn
 
 
     interface
-        subroutine torch_module_forward_cpp(module, input, output, flags) &
+        subroutine torch_module_forward_cpp(module, inputs, output, flags) &
             bind(c, name="torch_module_forward_cpp")
 
             import c_ptr, c_int
-            type(c_ptr),    intent(in), value :: module
-            type(c_ptr),    intent(in), value :: input
-            type(c_ptr),    intent(out)       :: output
-            integer(c_int), intent(in), value :: flags
+            type(c_ptr),    intent(in),   value :: module
+            type(c_ptr),    intent(in),   value :: inputs
+            type(c_ptr),    intent(inout)       :: output
+            integer(c_int), intent(in),   value :: flags
         end subroutine
     end interface
 
     interface
-        subroutine torch_module_train_cpp(module, input, target, optimizer, loss) &
+        subroutine torch_module_train_cpp(module, inputs, target, optimizer, loss) &
             bind(c, name="torch_module_train_cpp")
 
             import c_ptr, c_float
             type(c_ptr),    intent(in), value :: module
-            type(c_ptr),    intent(in), value :: input
+            type(c_ptr),    intent(in), value :: inputs
             type(c_ptr),    intent(in), value :: target
             type(c_ptr),    intent(in), value :: optimizer
             real(c_float),  intent(out)       :: loss
@@ -172,24 +201,24 @@ module torch_ftn
     end interface
 
     interface
-        subroutine torch_pymodule_forward_cpp(module, input, output) &
+        subroutine torch_pymodule_forward_cpp(module, inputs, output) &
             bind(c, name="torch_pymodule_forward_cpp")
 
             import c_ptr
-            type(c_ptr),    intent(in), value :: module
-            type(c_ptr),    intent(in), value :: input
-            type(c_ptr),    intent(out)       :: output
+            type(c_ptr),    intent(in),   value :: module
+            type(c_ptr),    intent(in),   value :: inputs
+            type(c_ptr),    intent(inout)       :: output
         end subroutine
     end interface
 
 
     interface
-        subroutine torch_pymodule_train_cpp(module, input, target, is_completed, loss) &
+        subroutine torch_pymodule_train_cpp(module, inputs, target, is_completed, loss) &
             bind(c, name="torch_pymodule_train_cpp")
 
             import c_ptr, c_bool, c_float
             type(c_ptr),     intent(in), value :: module
-            type(c_ptr),     intent(in), value :: input
+            type(c_ptr),     intent(in), value :: inputs
             type(c_ptr),     intent(in), value :: target
             logical(c_bool), intent(out)       :: is_completed
             real(c_float),   intent(out)       :: loss
@@ -222,9 +251,9 @@ module torch_ftn
     !!======================================================================================
 
     interface
-        subroutine torch_tensor_from_array_float_cpp( &
+        subroutine torch_tensor_from_array_cpp( &
             handle, array, arr_rank, arr_shape, elem_type, elem_size) &
-            bind(c, name="torch_tensor_from_array_float_cpp")
+            bind(c, name="torch_tensor_from_array_cpp")
 
             import c_ptr, c_int
             type(c_ptr),    intent(out)       :: handle
@@ -252,13 +281,11 @@ module torch_ftn
     end interface
 
     interface
-        subroutine torch_tensor_free_cpp(handle, host_ptr, dev_ptr) &
+        subroutine torch_tensor_free_cpp(handle) &
             bind(c, name="torch_tensor_free_cpp")
             
             import c_ptr
             type(c_ptr), intent(in), value :: handle
-            type(c_ptr), intent(in), value :: host_ptr
-            type(c_ptr), intent(in), value :: dev_ptr
         end subroutine
     end interface
 
@@ -274,6 +301,74 @@ module torch_ftn
         end function
     end interface
 #endif
+
+    !!======================================================================================
+    !! Tensor wrap-related C bindings
+    !!======================================================================================
+
+    interface
+        subroutine torch_tensor_wrap_create_cpp(handle) &
+            bind(c, name="torch_tensor_wrap_create_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(out) :: handle
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_wrap_add_tensor_cpp(handle, h_tensor) &
+            bind(c, name="torch_tensor_wrap_add_tensor_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(in), value :: handle
+            type(c_ptr), intent(in), value :: h_tensor
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_wrap_add_scalar_cpp(handle, p_value, elem_type, elem_size) &
+            bind(c, name="torch_tensor_wrap_add_scalar_cpp")
+            
+            import c_ptr, c_int
+            type(c_ptr),    intent(in), value :: handle
+            type(c_ptr),    intent(in), value :: p_value
+            integer(c_int), intent(in), value :: elem_type
+            integer(c_int), intent(in), value :: elem_size
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_wrap_add_array_cpp( &
+            handle, array, arr_rank, arr_shape, elem_type, elem_size) &
+            bind(c, name="torch_tensor_wrap_add_array_cpp")
+            
+            import c_ptr, c_int
+            type(c_ptr),    intent(in), value :: handle
+            type(c_ptr),    intent(in), value :: array
+            integer(c_int), intent(in), value :: arr_rank
+            integer(c_int), intent(in)        :: arr_shape(arr_rank)
+            integer(c_int), intent(in), value :: elem_type
+            integer(c_int), intent(in), value :: elem_size
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_wrap_clear_cpp(handle) &
+            bind(c, name="torch_tensor_wrap_clear_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(in), value :: handle
+        end subroutine
+    end interface
+
+    interface
+        subroutine torch_tensor_wrap_free_cpp(handle) &
+            bind(c, name="torch_tensor_wrap_free_cpp")
+            
+            import c_ptr
+            type(c_ptr), intent(in), value :: handle
+        end subroutine
+    end interface
 
     contains
 
@@ -303,11 +398,11 @@ module torch_ftn
         call torch_module_save_cpp(this%handle, file_name//c_null_char)
     end subroutine
 
-    subroutine torch_module_forward(this, input, output, flags)
-        class(torch_module), intent(inout) :: this
-        type(torch_tensor),  intent(in)    :: input
-        type(torch_tensor),  intent(out)   :: output
-        integer, optional,   intent(in)    :: flags
+    subroutine torch_module_forward(this, inputs, output, flags)
+        class(torch_module),     intent(inout)   :: this
+        type(torch_tensor_wrap), intent(in)      :: inputs
+        type(torch_tensor),      intent(inout)   :: output
+        integer, optional,       intent(in)      :: flags
 
         integer :: actual_flags
         
@@ -316,16 +411,16 @@ module torch_ftn
             actual_flags = flags
         end if
 
-        call torch_module_forward_cpp(this%handle, input%handle, output%handle, actual_flags)
+        call torch_module_forward_cpp(this%handle, inputs%handle, output%handle, actual_flags)
     end subroutine
 
-    subroutine torch_module_train(this, input, target, loss)
-        class(torch_module), intent(inout) :: this
-        type(torch_tensor),  intent(in)    :: input
-        type(torch_tensor),  intent(in)    :: target
-        real(real32),        intent(out)   :: loss
+    subroutine torch_module_train(this, inputs, target, loss)
+        class(torch_module),     intent(inout) :: this
+        type(torch_tensor_wrap), intent(in)    :: inputs
+        type(torch_tensor),      intent(in)    :: target
+        real(real32),            intent(out)   :: loss
 
-        call torch_module_train_cpp(this%handle, input%handle, target%handle, this%h_optimizer, loss)
+        call torch_module_train_cpp(this%handle, inputs%handle, target%handle, this%h_optimizer, loss)
     end subroutine
 
     subroutine torch_module_create_optimizer_sgd(this, lr)
@@ -354,29 +449,29 @@ module torch_ftn
 
     subroutine torch_pymodule_save(this, file_name)
         class(torch_pymodule), intent(in) :: this
-        character(len=*),    intent(in) :: file_name
+        character(len=*),    intent(in)   :: file_name
         
         call torch_pymodule_save_cpp(this%handle, file_name//c_null_char)
     end subroutine
 
-    subroutine torch_pymodule_forward(this, input, output)
-        class(torch_pymodule), intent(inout) :: this
-        type(torch_tensor),   intent(in)    :: input
-        type(torch_tensor),   intent(out)   :: output
+    subroutine torch_pymodule_forward(this, inputs, output)
+        class(torch_pymodule),   intent(inout)   :: this
+        type(torch_tensor_wrap), intent(in)      :: inputs
+        type(torch_tensor),      intent(inout)   :: output
 
-        call torch_pymodule_forward_cpp(this%handle, input%handle, output%handle)
+        call torch_pymodule_forward_cpp(this%handle, inputs%handle, output%handle)
     end subroutine
 
-    function torch_pymodule_train(this, input, target, loss) result(is_completed)
-        class(torch_pymodule), intent(inout) :: this
-        type(torch_tensor),    intent(in)    :: input
-        type(torch_tensor),    intent(in)    :: target
-        real(real32), intent(out)            :: loss
-        logical                              :: is_completed
+    function torch_pymodule_train(this, inputs, target, loss) result(is_completed)
+        class(torch_pymodule),   intent(inout) :: this
+        type(torch_tensor_wrap), intent(in)    :: inputs
+        type(torch_tensor),      intent(in)    :: target
+        real(real32), intent(out)              :: loss
+        logical                                :: is_completed
 
         logical(c_bool) :: temp
 
-        call torch_pymodule_train_cpp(this%handle, input%handle, target%handle, temp, loss)
+        call torch_pymodule_train_cpp(this%handle, inputs%handle, target%handle, temp, loss)
         is_completed = logical(temp)
     end function
 
@@ -407,38 +502,71 @@ module torch_ftn
             call acc_unmap_data(dummy)
         end if
 #endif
-        call torch_tensor_free_cpp(this%handle, this%host_ptr, this%dev_ptr)
+        call torch_tensor_free_cpp(this%handle)
     end subroutine
 
     !!======================================================================================
-    !! Tensor member - generated subroutines for rank/datatype permutations
+    !! Tensor wrap member subroutines
+    !!======================================================================================
+    
+    subroutine torch_tensor_wrap_create(this)
+        class(torch_tensor_wrap), intent(inout) :: this
+
+        call torch_tensor_wrap_create_cpp(this%handle)
+    end subroutine
+
+    subroutine torch_tensor_wrap_add_tensor(this, tensor)
+        class(torch_tensor_wrap), intent(inout) :: this
+        type(torch_tensor),       intent(in)    :: tensor
+
+        call torch_tensor_wrap_add_tensor_cpp(this%handle, tensor%handle)
+    end subroutine
+
+    subroutine torch_tensor_wrap_clear(this)
+        class(torch_tensor_wrap), intent(inout) :: this
+
+        call torch_tensor_wrap_clear_cpp(this%handle)
+    end subroutine
+
+    subroutine torch_tensor_wrap_free(this)
+        type(torch_tensor_wrap), intent(inout) :: this
+
+        call torch_tensor_wrap_free_cpp(this%handle)
+    end subroutine
+
+    !!======================================================================================
+    !! Tensor and tensor wrap member - generated subroutines for rank/datatype permutations
     !!======================================================================================
 
-<<%
-    subroutine torch_tensor_from_{dim}_{dt}(this, array)
-        class(torch_tensor), intent(inout)                  :: this
-        real({dt_fort}),     intent(in), target, contiguous :: array({dims_shape})
+<<% dtype, dims
+    subroutine torch_tensor_from_{dims.rank}_{dtype.name}(this, array)
+        class(torch_tensor),      intent(inout)                  :: this
+        {dtype.fortran_id} ({dtype.fortran_prec}), intent(in), target, contiguous :: array({dims.shape})
 
         this%is_acc_mapped = .false.
         this%acc_mapped_size = 0
-        call torch_tensor_from_array_float_cpp(this%handle, &
-            c_loc(array), size(shape(array)), shape(array), TORCH_FTN_TYPE_FP, 4)
+        call torch_tensor_from_array_cpp(this%handle, &
+            c_loc(array), size(shape(array)), shape(array), {dtype.c_id}, {dtype.size})
     end subroutine
-    subroutine torch_tensor_to_{dim}_{dt}(this, array)
-        class(torch_tensor), intent(inout)        :: this
-        real({dt_fort}),     intent(out), pointer :: array({dims_shape})
+    subroutine torch_tensor_to_{dims.rank}_{dtype.name}(this, array)
+        class(torch_tensor),      intent(inout)        :: this
+        {dtype.fortran_id} ({dtype.fortran_prec}), intent(out), pointer :: array({dims.shape})
 
         type(c_ptr) :: host_ptr
         type(c_ptr) :: dev_ptr
-        integer :: arr_shape({dim})
+        integer :: arr_shape({dims.rank})
 
-        call torch_tensor_to_array_cpp(this%handle, host_ptr, dev_ptr, {dim}, arr_shape, 4)
+        if (associated(array)) then
+            call torch_throw_cpp("torch_tensor_to_array: pointer needs to be unassociated!"//c_null_char)
+        end if
+
+        call torch_tensor_to_array_cpp(this%handle, host_ptr, dev_ptr, {dims.rank}, arr_shape, {dtype.size})
 
 #ifdef _OPENACC
         call c_f_pointer(host_ptr, array, arr_shape)
         if (c_associated(dev_ptr)) then
             this%is_acc_mapped = .true.
-            this%acc_mapped_size = product(arr_shape) * 4
+            this%acc_mapped_size = product(arr_shape) * {dtype.size}
             this%host_ptr = host_ptr
             this%dev_ptr  = dev_ptr
             call acc_map_data(array, torch_helper_ptr_to_devptr_cpp(dev_ptr), this%acc_mapped_size)
@@ -450,7 +578,23 @@ module torch_ftn
             call c_f_pointer(host_ptr, array, arr_shape)
         end if
 #endif
+    end subroutine
 
+    subroutine torch_tensor_wrap_add_array_{dims.rank}_{dtype.name}(this, array)
+        class(torch_tensor_wrap), intent(inout)             :: this
+        {dtype.fortran_id} ({dtype.fortran_prec}),     intent(in), target, contiguous :: array({dims.shape})
+
+        call torch_tensor_wrap_add_array_cpp(this%handle, &
+            c_loc(array), size(shape(array)), shape(array), {dtype.c_id}, {dtype.size})
+    end subroutine
+%>>
+
+<<% (dtype)
+    subroutine torch_tensor_wrap_add_scalar_{dtype.name}(this, value)
+        class(torch_tensor_wrap), intent(inout) :: this
+        {dtype.fortran_id} ({dtype.fortran_prec}), intent(in)    :: value
+
+        call torch_tensor_wrap_add_scalar_cpp(this%handle, c_loc(value), {dtype.c_id}, {dtype.size})
     end subroutine
 %>>
 

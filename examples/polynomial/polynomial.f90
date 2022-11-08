@@ -73,8 +73,9 @@ program polynomial
     logical, parameter :: use_gpu = .false.
 #endif
     
-    type(torch_module)    :: torch_mod
-    type(torch_tensor)    :: in_tensor, out_tensor, target_tensor
+    type(torch_module)      :: torch_mod
+    type(torch_tensor)      :: out_tensor, target_tensor
+    type(torch_tensor_wrap) :: in_tensors
 
     real(real32) :: loss
     real(real32), dimension(1, batch_size) :: input, target
@@ -107,11 +108,12 @@ program polynomial
     end if
     call torch_mod%load(in_fname, flag)
     call torch_mod%create_optimizer_sgd(0.1)
+    call in_tensors%create
 
     !$acc data create (input, target) copyin(coeffs)
 
     !$acc host_data use_device(input)
-    call in_tensor%    from_array(input)
+    call in_tensors%add_array(input)
     !$acc end host_data
 
     !$acc host_data use_device(target)
@@ -125,12 +127,12 @@ program polynomial
         !$acc update device(input)
 
         call eval_polynomial(coeffs, input, target)
-        call torch_mod%train(in_tensor, target_tensor, loss)
+        call torch_mod%train(in_tensors, target_tensor, loss)
 
         if (mod(batch_idx, 100) == 0) then
             print "(A,I6,A,F9.6)", "Batch ",batch_idx," loss is ",loss
         end if
-        if (loss < 1e-3) exit
+        if (loss < 1e-4) exit
     end do
 
     if (batch_idx < max_batch_id) then
@@ -145,14 +147,14 @@ program polynomial
     !$acc update device(input)
     call eval_polynomial(coeffs, input, target)
 
-    call torch_mod%forward(in_tensor, out_tensor)
+    call torch_mod%forward(in_tensors, out_tensor)
     call out_tensor%to_array(output)
 
     !$acc update host(target, output)
     loss = sum( (target-output)**2 ) / batch_size
     
     print *, target(1,1:4), output(1,1:4)
-    print "(A,F9.6)", "L2 error of the trained model is ", loss
+    print "(A,F9.6)", "Mean squared error of the trained model is ", loss
 
     !$acc end data
 

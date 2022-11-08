@@ -27,9 +27,10 @@ program python_training
 
     integer :: n
     type(torch_pymodule) :: torch_pymod
-    type(torch_tensor) :: t_in, t_out, t_target
+    type(torch_tensor) :: t_out, t_target
+    type(torch_tensor_wrap) :: tw_in
 
-    real(real32) :: input(224, 224, 3, 10), target(224)
+    real(real32) :: input(2, 3), target(2), factor
     real(real32), pointer :: output(:,:)
     real(real32) :: loss
     logical :: is_completed
@@ -46,18 +47,23 @@ program python_training
     allocate(character(arglen) :: filename)
     call get_command_argument(number=1, value=filename, status=stat)
 
-    input = 1.0
-    call t_in%from_array(input)
+    input(1,:) = 1.0
+    input(2,:) = 2.0
+    factor = 3.0
+
+    call tw_in%create
+    call tw_in%add_array(input)
+    call tw_in%add_scalar(factor)
     call t_target%from_array(target)
 
     call torch_pymod%load(filename)
     ! will call Python function ftn_pytorch_forward(input) -> output
-    call torch_pymod%forward(t_in, t_out)
+    call torch_pymod%forward(tw_in, t_out)
     call t_out%to_array(output)
     print *, output
 
     ! will call Python function ftn_pytorch_train(input, target) -> (is_completed, loss)
-    is_completed = torch_pymod%train(t_in, t_target, loss)
+    is_completed = torch_pymod%train(tw_in, t_target, loss)
     print *, is_completed, loss
 
 end program

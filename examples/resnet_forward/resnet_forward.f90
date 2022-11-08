@@ -27,7 +27,8 @@ program resnet_forward
 
     integer :: n
     type(torch_module) :: torch_mod
-    type(torch_tensor) :: in_tensor, out_tensor
+    type(torch_tensor_wrap) :: input_tensors
+    type(torch_tensor) :: out_tensor
 
     real(real32) :: input(224, 224, 3, 10)
     real(real32), pointer :: output(:, :)
@@ -45,9 +46,10 @@ program resnet_forward
     call get_command_argument(number=1, value=filename, status=stat)
 
     input = 1.0
-    call in_tensor%from_array(input)
+    call input_tensors%create
+    call input_tensors%add_array(input)
     call torch_mod%load(filename)
-    call torch_mod%forward(in_tensor, out_tensor)
+    call torch_mod%forward(input_tensors, out_tensor)
     call out_tensor%to_array(output)
 
     print *, output(1:5, 1)
