@@ -29,8 +29,10 @@ set -e
 # 1. with GCC, build pytorch C++ wrapper lib that exposes things to Fortran
 # 2. with Intel, build fortran bindings that just bind(c) to built lib from (1)
 
-PYPATH=$(find /opt/conda/lib/ -maxdepth 1 -name 'python?.*' -type d)
-CMAKE_PREFIX_PATH="${PYPATH}/site-packages/torch/share/cmake;${PYPATH}/site-packages/pybind11/share/cmake"
+# Intel Pytorch containers seem to have Pytorch installed in /usr/local
+PY_SITE_PATH=$(find /usr/local/lib/ -maxdepth 1 -name 'python?.*' -type d)/dist-packages
+CMAKE_PREFIX_PATH="${PY_SITE_PATH}/torch/share/cmake;${PY_SITE_PATH}/pybind11/share/cmake"
+echo "Trying to use Python libraries from $PY_SITE_PATH"
 
 CONFIG=Release
 OPENACC=0

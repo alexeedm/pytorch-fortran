@@ -30,8 +30,10 @@ set -e
 # 2. with NVHPC, build fortran bindings that just bind(c) to built lib from (1)
 
 NVPATH=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/??.?)/compilers/bin
-PYPATH=$(find /opt/conda/lib/ -maxdepth 1 -name 'python?.*' -type d)
-CMAKE_PREFIX_PATH="${PYPATH}/site-packages/torch/share/cmake;${PYPATH}/site-packages/pybind11/share/cmake"
+# Nvidia Pytorch containers seem to have Pytorch installed in /usr/local
+PY_SITE_PATH=$(find /usr/local/lib/ -maxdepth 1 -name 'python?.*' -type d)/dist-packages
+CMAKE_PREFIX_PATH="${PY_SITE_PATH}/torch/share/cmake;${PY_SITE_PATH}/pybind11/share/cmake"
+echo "Trying to use Python libraries from $PY_SITE_PATH"
 
 CONFIG=Release
 OPENACC=1
@@ -44,8 +46,9 @@ INSTALL_PATH=${1:-$BUILD_PATH/install/}
 mkdir -p $BUILD_PATH/build_proxy $BUILD_PATH/build_fortproxy $BUILD_PATH/build_example
 # c++ wrappers 
 (
+    set -x
     cd $BUILD_PATH/build_proxy 
-    cmake -DOPENACC=$OPENACC -DCMAKE_BUILD_TYPE=$CONFIG -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_CXX_COMPILER=g++ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda -DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH -DTORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST ../../src/proxy_lib
+    cmake -DOPENACC=$OPENACC -DCMAKE_BUILD_TYPE=$CONFIG -DCMAKE_INSTALL_PREFIX=$INSTALL_PATH -DCMAKE_CXX_COMPILER=g++ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda -DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" ../../src/proxy_lib
     cmake --build . --parallel
     make install
 )
