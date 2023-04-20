@@ -78,6 +78,15 @@ Members:
 
 ## Changelog
 
+### v0.4
+* Fixed issues with `target` attribute and `resnet_forward` crash with GNU
+* Updated `container.py` to work with more recent compilers
+* PyTorch 1.12 may suffer from an issue described here: https://github.com/pytorch/pytorch/issues/68876 You should update to 1.13 if you see a compilation error similar to this one 
+  ```
+  fatal error: torch/csrc/generic/Storage.h: No such file or directory
+  ```
+* Now the commits will go directly to the `main` branch instead of `vX.X` and we will use tags instead
+
 ### v0.3
 * Changed interface: `forward` and `train` routines now accept `torch_tensor_wrap` instead of just `torch_tensor`. This allows a user to add multiple inputs consisting of tensors of different size and scalar values
 * Fixed possible small memory leaks due to tensor handles
