@@ -35,7 +35,9 @@ program resnet_forward
 
     character(:), allocatable :: filename
     integer :: arglen, stat
-
+    
+    nullify(output)
+    
     if (command_argument_count() /= 1) then
         print *, "Need to pass a single argument: Pytorch model file name"
         stop

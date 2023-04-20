@@ -85,7 +85,9 @@ program polynomial
 
     character(:), allocatable :: in_fname, out_fname
     integer :: arglen, stat
-
+    
+    nullify(output)
+    
     if (command_argument_count() /= 2) then
         print *, "Need to pass a two argument: initial model file name, trained model file name"
         stop
