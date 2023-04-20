@@ -592,7 +592,7 @@ module torch_ftn
 <<% (dtype)
     subroutine torch_tensor_wrap_add_scalar_{dtype.name}(this, value)
         class(torch_tensor_wrap), intent(inout) :: this
-        {dtype.fortran_id} ({dtype.fortran_prec}), intent(in)    :: value
+        {dtype.fortran_id} ({dtype.fortran_prec}), intent(in), target    :: value
 
         call torch_tensor_wrap_add_scalar_cpp(this%handle, c_loc(value), {dtype.c_id}, {dtype.size})
     end subroutine
