@@ -556,10 +556,6 @@ module torch_ftn
         type(c_ptr) :: dev_ptr
         integer :: arr_shape({dims.rank})
 
-        if (associated(array)) then
-            call torch_throw_cpp("torch_tensor_to_array: pointer needs to be unassociated!"//c_null_char)
-        end if
-
         call torch_tensor_to_array_cpp(this%handle, host_ptr, dev_ptr, {dims.rank}, arr_shape, {dtype.size})
 
 #ifdef _OPENACC
