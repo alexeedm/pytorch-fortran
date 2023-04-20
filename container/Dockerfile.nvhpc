@@ -1,26 +1,45 @@
-FROM nvcr.io/nvidia/pytorch:22.08-py3
+FROM nvcr.io/nvidia/pytorch:23.03-py3
 
-# NVIDIA HPC SDK version 22.7
+# NVIDIA HPC SDK version 23.1
 RUN apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates && \
+        ca-certificates \
+        gnupg \
+        wget && \
     rm -rf /var/lib/apt/lists/*
-RUN echo "deb [trusted=yes] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /" >> /etc/apt/sources.list.d/hpccm.list && \
+RUN mkdir -p /usr/share/keyrings && \
+    rm -f /usr/share/keyrings/DEB-GPG-KEY-NVIDIA-HPC-SDK.gpg && \
+    wget -qO - https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK | gpg --dearmor -o /usr/share/keyrings/DEB-GPG-KEY-NVIDIA-HPC-SDK.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/DEB-GPG-KEY-NVIDIA-HPC-SDK.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /" >> /etc/apt/sources.list.d/hpccm.list && \
     apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        nvhpc-22-7 && \
+        nvhpc-23-1 && \
     rm -rf /var/lib/apt/lists/*
+
+RUN sed -ie 's/, nvhpc-2023 (>= 23.1)//g' /var/lib/dpkg/status && \
+    apt autoremove -y
 
 RUN cuda_path=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/*/cuda -maxdepth 1 -name '??.?' -type d) && \
     rm -r $cuda_path && \
     ln -s /usr/local/cuda $cuda_path
 
-ENV LD_PRELOAD=$LD_PRELOAD:/opt/nvidia/hpc_sdk/Linux_x86_64/22.7/compilers/lib/libaccnotify.so
+ENV LD_PRELOAD=$LD_PRELOAD:/opt/nvidia/hpc_sdk/Linux_x86_64/23.1/compilers/lib/libaccnotify.so
 
 RUN apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake \
         gdb \
         less \
         vim && \
     rm -rf /var/lib/apt/lists/*
+
+# CMake version 3.25.1
+RUN apt-get update -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        make \
+        wget && \
+    rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /var/tmp && wget -q -nc --no-check-certificate -P /var/tmp https://github.com/Kitware/CMake/releases/download/v3.25.1/cmake-3.25.1-linux-x86_64.sh && \
+    mkdir -p /usr/local && \
+    /bin/sh /var/tmp/cmake-3.25.1-linux-x86_64.sh --prefix=/usr/local --skip-license && \
+    rm -rf /var/tmp/cmake-3.25.1-linux-x86_64.sh
+ENV PATH=/usr/local/bin:$PATH
