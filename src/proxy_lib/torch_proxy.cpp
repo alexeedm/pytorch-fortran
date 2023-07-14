@@ -61,6 +61,20 @@ namespace {
 void debug_print(const char* format, ...) {}
 #endif
 
+template<typename Lambda>
+inline auto wrap_exceptions_lambda(
+    Lambda code, std::string prefix = "Caught PyTorch exception") -> decltype(code()) {
+
+    try {
+        return code();
+    } catch(const std::exception &e){
+        printf("%s: %s\n", prefix.c_str(), e.what());
+        throw;
+    }
+}
+
+#define WRAP_EXCEPTIONS(code) wrap_exceptions_lambda( [&] () { return code; } )
+
 bool is_present_flag(int flags, int probe) {
     return (flags & probe) != 0;
 }
@@ -121,7 +135,7 @@ torch::Tensor tensor_from_array(void* array,
     }
     debug_print("]\n");
 
-    return torch::from_blob(array, torch_shape, [] (void *) {}, options);
+    return WRAP_EXCEPTIONS(torch::from_blob(array, torch_shape, [] (void *) {}, options));
 }
 
 /*
@@ -145,7 +159,6 @@ public:
             throw std::runtime_error("Only one PyModule can be opened at a time, trying to open " + module_name);
         }
         initialized = true;
-        
         guard = std::make_unique<py::scoped_interpreter>();
         auto sys = py::module::import("sys");
         sys.attr("path").attr("insert")(1, path.c_str());
@@ -179,9 +192,13 @@ void torch_module_load_cpp(void** h_module, const char* file_name, int flags) {
     mod->host_cache = std::make_shared<Scratch>(0);
 
     debug_print("Loading module from file '%s'... ", file_name);
-    mod->jit_module = torch::jit::load(file_name);
+    wrap_exceptions_lambda(
+        [&] () { mod->jit_module = torch::jit::load(file_name); },
+        std::string("Caugth PyTorch error opening file ") + file_name
+    );
+
     if (is_present_flag(flags, TORCH_FTN_MODULE_USE_DEVICE)) {
-         mod->jit_module.to(torch::kCUDA);
+        WRAP_EXCEPTIONS( mod->jit_module.to(torch::kCUDA) );
     }
     *h_module = static_cast<void*>(mod);
     debug_print("done. Handle %p, %s backend\n", *h_module,
@@ -197,7 +214,7 @@ void torch_module_forward_cpp(void* h_module, void* h_inputs, void** h_output, i
 
     if (*h_output == nullptr) { *h_output = static_cast<void*>(new torch::Tensor); }
     auto p_tensor = static_cast<torch::Tensor*>(*h_output);
-    *p_tensor = mod->jit_module.forward(*inputs).toTensor().contiguous();
+    *p_tensor = WRAP_EXCEPTIONS( mod->jit_module.forward(*inputs).toTensor().contiguous() );
     update_map(p_tensor->data_ptr(), mod->host_cache);
 }
 
@@ -208,17 +225,19 @@ void torch_module_train_cpp(void* h_module, void* h_inputs, void* h_target, void
     auto optim  = static_cast<torch::optim::Optimizer*>(h_optimizer);
 
     debug_print("Module %p :: train(in: %p * %ld, target: %p)\n", h_module, h_inputs, inputs->size(), h_target);
-    optim->zero_grad();
-    auto prediction = mod->jit_module.forward(*inputs).toTensor();
-    auto loss_tensor = torch::nn::functional::mse_loss(prediction, *target);
-    loss_tensor.backward();
-    optim->step();
-    *loss = loss_tensor.template item<float>();
+    wrap_exceptions_lambda( [&] () {
+        optim->zero_grad();
+        auto prediction = mod->jit_module.forward(*inputs).toTensor();
+        auto loss_tensor = torch::nn::functional::mse_loss(prediction, *target);
+        loss_tensor.backward();
+        optim->step();
+        *loss = loss_tensor.template item<float>();
+    });
 }
 
 void torch_module_save_cpp(void* h_module, char* filename) {
     auto mod = static_cast<JITModule*>(h_module);
-    mod->jit_module.save(filename);
+    WRAP_EXCEPTIONS( mod->jit_module.save(filename) );
 }
 
 void torch_module_free_cpp(void* h_module) {
@@ -242,7 +261,7 @@ void torch_pymodule_load_cpp(void** h_module, const char* file_name) {
 
     // Free memory if we're loading a new module
     torch_pymodule_free_cpp(*h_module);
-    auto mod = new PyModule(folder, module_name);
+    auto mod = WRAP_EXCEPTIONS( new PyModule(folder, module_name) );
     mod->host_cache = std::make_shared<Scratch>(0);
 
     *h_module = static_cast<void*>(mod);
@@ -257,7 +276,7 @@ void torch_pymodule_forward_cpp(void* h_module, void* h_inputs, void** h_output)
     
     if (*h_output == nullptr) { *h_output = static_cast<void*>(new torch::Tensor); }
     auto p_tensor = static_cast<torch::Tensor*>(*h_output);
-    *p_tensor = mod->py_module.attr("ftn_pytorch_forward")(*inputs).cast<torch::Tensor>();
+    *p_tensor = WRAP_EXCEPTIONS( mod->py_module.attr("ftn_pytorch_forward")(*inputs).cast<torch::Tensor>() );
     update_map(p_tensor->data_ptr(), mod->host_cache);
 }
 
@@ -267,7 +286,7 @@ void torch_pymodule_train_cpp(void* h_module, void* h_inputs, void* h_target, bo
     auto target  = static_cast<torch::Tensor*>(h_target);
 
     debug_print("PyModule %p :: train(in: %p, target: %p)\n", h_module, h_inputs, h_target);
-    auto res = mod->py_module.attr("ftn_pytorch_train")(*inputs, *target);
+    auto res = WRAP_EXCEPTIONS( mod->py_module.attr("ftn_pytorch_train")(*inputs, *target) );
     auto res_tuple = res.cast<std::tuple<bool, float>>();
 
     *is_completed = std::get<0>(res_tuple);
@@ -277,7 +296,7 @@ void torch_pymodule_train_cpp(void* h_module, void* h_inputs, void* h_target, bo
 void torch_pymodule_save_cpp(void* h_module, char* filename) {
     auto mod = static_cast<PyModule*>(h_module);
     debug_print("PyModule %p :: save\n", h_module);
-    mod->py_module.attr("ftn_pytorch_save")(filename);
+    WRAP_EXCEPTIONS( mod->py_module.attr("ftn_pytorch_save")(filename) );
 }
 
 void torch_pymodule_free_cpp(void* h_module) {
@@ -362,7 +381,7 @@ void torch_tensor_to_array_cpp(void* handle,
 
 void torch_tensor_backward(void* handle) {
     auto tensor  = static_cast<torch::Tensor*>(handle);
-    tensor->backward();
+    WRAP_EXCEPTIONS( tensor->backward() );
 }
 
 void torch_tensor_free_cpp(void* handle) {
