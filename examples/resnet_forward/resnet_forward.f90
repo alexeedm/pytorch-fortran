@@ -49,7 +49,7 @@ program resnet_forward
     call input_tensors%create
     call input_tensors%add_array(input)
     call torch_mod%load(filename)
-    call torch_mod%forward(input_tensors, out_tensor)
+    call torch_mod%forward(input_tensors, out_tensor, flags=module_use_inference_mode)
     call out_tensor%to_array(output)
 
     print *, output(1:5, 1)
