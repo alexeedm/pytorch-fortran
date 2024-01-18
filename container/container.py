@@ -39,7 +39,7 @@ def build_nvhpc(stage, args):
     pytorch_tag = args.pytorch_tag
     if (not pytorch_tag):
         page = requests.get(r'https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch').text
-        m = re.search('>\s*(\S+)\s*\(Latest\) Scan Results', page, flags=re.MULTILINE)
+        m = re.search('>\s*(\S+)\s*\(Latest\) Security Scan Results', page, flags=re.MULTILINE)
         if (m):
             pytorch_tag = m[1]
     
@@ -66,7 +66,7 @@ def build_nvhpc(stage, args):
 
     # Remove NV HPC bundled CUDA and point the compilers to the Torch CUDA
     stage += hp.shell(commands = [
-        r'''cuda_path=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/*/cuda -maxdepth 1 -name '??.?' -type d)''',
+        r'''cuda_path=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/*.*/cuda -maxdepth 1 -name '??.?' -type d)''',
         r'rm -r $cuda_path',
         r'ln -s /usr/local/cuda $cuda_path'
     ])
@@ -88,8 +88,8 @@ def build_gnu(stage, args):
     # Trying to identify the latest Pytorch tag
     pytorch_tag = args.pytorch_tag
     if (not pytorch_tag):
+        from natsort import natsorted
         try:
-            from natsort import natsorted
             response = json.loads(requests.get(r'https://registry.hub.docker.com/v2/repositories/pytorch/pytorch/tags').text)
             versions = [cont['name'] for cont in response['results'] if ('devel' in cont['name'] and 'nightly' not in cont['name'])]
             pytorch_tag = natsorted(versions)[-1]

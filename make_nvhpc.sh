@@ -29,7 +29,7 @@ set -e
 # 1. with GCC, build pytorch C++ wrapper lib that exposes things to Fortran
 # 2. with NVHPC, build fortran bindings that just bind(c) to built lib from (1)
 
-NVPATH=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/??.?)/compilers/bin
+NVPATH=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/*.*)/compilers/bin
 # Nvidia Pytorch containers seem to have Pytorch installed in /usr/local
 PY_SITE_PATH=$(find /usr/local/lib/ -maxdepth 1 -name 'python?.*' -type d)/dist-packages
 CMAKE_PREFIX_PATH="${PY_SITE_PATH}/torch/share/cmake;${PY_SITE_PATH}/pybind11/share/cmake"

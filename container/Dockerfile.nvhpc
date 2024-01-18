@@ -1,6 +1,6 @@
-FROM nvcr.io/nvidia/pytorch:23.03-py3
+FROM nvcr.io/nvidia/pytorch:23.12-py3
 
-# NVIDIA HPC SDK version 23.1
+# NVIDIA HPC SDK version 23.11
 RUN apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -13,17 +13,14 @@ RUN mkdir -p /usr/share/keyrings && \
     echo "deb [signed-by=/usr/share/keyrings/DEB-GPG-KEY-NVIDIA-HPC-SDK.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /" >> /etc/apt/sources.list.d/hpccm.list && \
     apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        nvhpc-23-1 && \
+        nvhpc-23-11 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN sed -ie 's/, nvhpc-2023 (>= 23.1)//g' /var/lib/dpkg/status && \
-    apt autoremove -y
-
-RUN cuda_path=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/*/cuda -maxdepth 1 -name '??.?' -type d) && \
+RUN cuda_path=$(find /opt/nvidia/hpc_sdk/Linux_x86_64/*.*/cuda -maxdepth 1 -name '??.?' -type d) && \
     rm -r $cuda_path && \
     ln -s /usr/local/cuda $cuda_path
 
-ENV LD_PRELOAD=$LD_PRELOAD:/opt/nvidia/hpc_sdk/Linux_x86_64/23.1/compilers/lib/libaccnotify.so
+ENV LD_PRELOAD=$LD_PRELOAD:/opt/nvidia/hpc_sdk/Linux_x86_64/23.11/compilers/lib/libaccnotify.so
 
 RUN apt-get update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
