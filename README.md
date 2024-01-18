@@ -40,6 +40,11 @@ install/bin/python_training  ../examples/python_training/model.py
 
 ## API
 
+Keep in mind that order of the array dimensions is different in Fortran and C/Pytorch.
+Fortran's contiguous dimension is the first one, while in Pytorch the contiguous dimension is the last one.
+Therefore, in order for the Fortran input to match the Pytorch expectation, the order of the Fortran input array dimensions must be the inverse of the Pytorch input tensor.
+The library will take care of correctly matching the dimensions in this case without any data movement.
+
 We are working on documenting the full API. Please refer to the examples for more details.
 The bindings are provided through the following Fortran classes:
 
